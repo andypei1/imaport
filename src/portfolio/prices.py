@@ -112,6 +112,9 @@ def _fetch_bloomberg_prices(
     request.set("startDate", start.strftime("%Y%m%d"))
     request.set("endDate", end.strftime("%Y%m%d"))
     request.set("periodicitySelection", "DAILY")
+    # Keep raw historical prices (no split back-adjustment) so prices align with
+    # transaction/share history as-recorded in portfolio books.
+    request.set("adjustmentSplit", False)
 
     session.sendRequest(request)
 
@@ -216,7 +219,13 @@ def get_prices(
     if trades_for_fallback is not None and not trades_for_fallback.empty:
         fallback = _build_last_trade_price_fallback(trades_for_fallback, symbols, start, end)
         if not fallback.empty:
-            # Prefer existing out; fill gaps with fallback (drop_duplicates keep="first" keeps out rows).
+            # Only use fallback for symbols with no Bloomberg/manual coverage at all in-window.
+            # This avoids injecting stale trade prices on market holidays for symbols that do have real market data.
+            covered_symbols = set(out["symbol"].astype(str).unique()) if not out.empty else set()
+            missing_symbols = [s for s in symbols if s not in covered_symbols]
+            fallback = fallback[fallback["symbol"].isin(missing_symbols)]
+        if not fallback.empty:
+            # Prefer existing out; fill gaps with fallback only for fully-missing symbols.
             out = pd.concat([out, fallback], ignore_index=True)
             out = out.drop_duplicates(subset=["date", "symbol"], keep="first")
             out = out.sort_values(["date", "symbol"]).reset_index(drop=True)

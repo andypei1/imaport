@@ -1,0 +1,372 @@
+symbol,candidate_security,name,gics_sector_name,industry_sector,id_bb_global,candidate_returned
+ABCB,ABCB US Equity,AMERIS BANCORP,Financials,Financial,BBG000CDY3H5,True
+ABCB,__chosen__,ABCB US Equity,Financials,GICS_SECTOR_NAME,,True
+ADUS,ADUS US Equity,ADDUS HOMECARE CORP,Health Care,"Consumer, Non-cyclical",BBG000NJGX84,True
+ADUS,__chosen__,ADUS US Equity,Health Care,GICS_SECTOR_NAME,,True
+AGX,AGX US Equity,ARGAN INC,Industrials,Industrial,BBG000K4J3T0,True
+AGX,__chosen__,AGX US Equity,Industrials,GICS_SECTOR_NAME,,True
+AIR,AIR US Equity,AAR CORP,Industrials,Industrial,BBG000BBGQF1,True
+AIR,__chosen__,AIR US Equity,Industrials,GICS_SECTOR_NAME,,True
+AMBA,AMBA US Equity,AMBARELLA INC,Information Technology,Technology,BBG001QZCPJ2,True
+AMBA,__chosen__,AMBA US Equity,Information Technology,GICS_SECTOR_NAME,,True
+AMCX,AMCX US Equity,AMC NETWORKS INC-A,Communication Services,Communications,BBG000H01H92,True
+AMCX,__chosen__,AMCX US Equity,Communication Services,GICS_SECTOR_NAME,,True
+AMN,AMN US Equity,AMN HEALTHCARE SERVICES INC,Health Care,"Consumer, Non-cyclical",BBG000BCT197,True
+AMN,__chosen__,AMN US Equity,Health Care,GICS_SECTOR_NAME,,True
+AMPH,AMPH US Equity,AMPHASTAR PHARMACEUTICALS IN,Health Care,"Consumer, Non-cyclical",BBG000BW90S6,True
+AMPH,__chosen__,AMPH US Equity,Health Care,GICS_SECTOR_NAME,,True
+APOG,APOG US Equity,APOGEE ENTERPRISES INC,Industrials,Industrial,BBG000BC6L61,True
+APOG,__chosen__,APOG US Equity,Industrials,GICS_SECTOR_NAME,,True
+ARES,ARES US Equity,ARES MANAGEMENT CORP - A,Financials,Financial,BBG0068KVV91,True
+ARES,__chosen__,ARES US Equity,Financials,GICS_SECTOR_NAME,,True
+ASGN,ASGN US Equity,ASGN INC,Information Technology,Technology,BBG000CRN8N8,True
+ASGN,__chosen__,ASGN US Equity,Information Technology,GICS_SECTOR_NAME,,True
+ATKR,ATKR US Equity,ATKORE INC,Industrials,Industrial,BBG000QTFDQ4,True
+ATKR,__chosen__,ATKR US Equity,Industrials,GICS_SECTOR_NAME,,True
+ATSG,ATSG US Equity,AIR TRANSPORT SERVICES GROUP,Industrials,Industrial,BBG000BLW5F7,True
+ATSG,__chosen__,ATSG US Equity,Industrials,GICS_SECTOR_NAME,,True
+AUD,AUD US Equity,AUDACY INC,Communication Services,Communications,,True
+AUD,__chosen__,AUD US Equity,Communication Services,GICS_SECTOR_NAME,,True
+AVA,AVA US Equity,AVISTA CORP,Utilities,Utilities,BBG000BCNF74,True
+AVA,__chosen__,AVA US Equity,Utilities,GICS_SECTOR_NAME,,True
+AVNT,AVNT US Equity,AVIENT CORP,Materials,Industrial,BBG000C8NJ10,True
+AVNT,__chosen__,AVNT US Equity,Materials,GICS_SECTOR_NAME,,True
+AWR,AWR US Equity,AMERICAN STATES WATER CO,Utilities,Utilities,BBG000F964B6,True
+AWR,__chosen__,AWR US Equity,Utilities,GICS_SECTOR_NAME,,True
+AX,AX US Equity,AXOS FINANCIAL INC,Financials,Financial,BBG000QPHD08,True
+AX,__chosen__,AX US Equity,Financials,GICS_SECTOR_NAME,,True
+AZTA,AZTA US Equity,AZENTA INC,Health Care,"Consumer, Non-cyclical",BBG000DX9JV7,True
+AZTA,__chosen__,AZTA US Equity,Health Care,GICS_SECTOR_NAME,,True
+BAND,BAND US Equity,BANDWIDTH INC-CLASS A,Communication Services,Technology,BBG001K003W2,True
+BAND,__chosen__,BAND US Equity,Communication Services,GICS_SECTOR_NAME,,True
+BCML,BCML US Equity,BAYCOM CORP,Financials,Financial,BBG00FWKRBS2,True
+BCML,__chosen__,BCML US Equity,Financials,GICS_SECTOR_NAME,,True
+BEAT,BEAT US Equity,HEARTBEAM INC,Health Care,"Consumer, Non-cyclical",BBG012F6HZX2,True
+BEAT,__chosen__,BEAT US Equity,Health Care,GICS_SECTOR_NAME,,True
+BJ,BJ US Equity,BJ'S WHOLESALE CLUB HOLDINGS,Consumer Staples,"Consumer, Cyclical",BBG00FQ8T4G3,True
+BJ,__chosen__,BJ US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+BRBR,BRBR US Equity,BELLRING BRANDS INC,Consumer Staples,"Consumer, Non-cyclical",BBG013QNJHP8,True
+BRBR,__chosen__,BRBR US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+BTE,BTE US Equity,BAYTEX ENERGY CORP,Energy,Energy,BBG000BW3M86,True
+BTE,__chosen__,BTE US Equity,Energy,GICS_SECTOR_NAME,,True
+CALY,CALY US Equity,CALLAWAY GOLF COMPANY,Consumer Discretionary,"Consumer, Cyclical",BBG000CPCVY1,True
+CALY,__chosen__,CALY US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+CARG,CARG US Equity,CARGURUS INC,Communication Services,Communications,BBG00HQ77DS2,True
+CARG,__chosen__,CARG US Equity,Communication Services,GICS_SECTOR_NAME,,True
+CARS,CARS US Equity,CARS.COM INC,Communication Services,Communications,BBG000HGTH33,True
+CARS,__chosen__,CARS US Equity,Communication Services,GICS_SECTOR_NAME,,True
+CBNK,CBNK US Equity,CAPITAL BANCORP INC/MD,Financials,Financial,BBG000G2Z909,True
+CBNK,__chosen__,CBNK US Equity,Financials,GICS_SECTOR_NAME,,True
+CCF,CCF US Equity,CHASE CORP,Materials,Industrial,BBG000BL9JB7,True
+CCF,__chosen__,CCF US Equity,Materials,GICS_SECTOR_NAME,,True
+CCRD,CCRD US Equity,CORECARD CORP,Information Technology,Technology,BBG000CGZHP7,True
+CCRD,__chosen__,CCRD US Equity,Information Technology,GICS_SECTOR_NAME,,True
+CDNA,CDNA US Equity,CAREDX INC,Health Care,"Consumer, Non-cyclical",BBG006JS5785,True
+CDNA,__chosen__,CDNA US Equity,Health Care,GICS_SECTOR_NAME,,True
+CDRE,CDRE US Equity,CADRE HOLDINGS INC,Industrials,Industrial,BBG011RK3N71,True
+CDRE,__chosen__,CDRE US Equity,Industrials,GICS_SECTOR_NAME,,True
+CENT,CENT US Equity,CENTRAL GARDEN & PET CO,Consumer Staples,"Consumer, Cyclical",BBG000BFD605,True
+CENT,__chosen__,CENT US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+CHRD,CHRD US Equity,CHORD ENERGY CORP,Energy,Energy,BBG00Y7BLHL9,True
+CHRD,__chosen__,CHRD US Equity,Energy,GICS_SECTOR_NAME,,True
+CMC,CMC US Equity,COMMERCIAL METALS CO,Materials,Basic Materials,BBG000BFSND8,True
+CMC,__chosen__,CMC US Equity,Materials,GICS_SECTOR_NAME,,True
+CNMD,CNMD US Equity,CONMED CORP,Health Care,"Consumer, Non-cyclical",BBG000BFZVH8,True
+CNMD,__chosen__,CNMD US Equity,Health Care,GICS_SECTOR_NAME,,True
+COLL,COLL US Equity,COLLEGIUM PHARMACEUTICAL INC,Health Care,"Consumer, Non-cyclical",BBG000N7LPW4,True
+COLL,__chosen__,COLL US Equity,Health Care,GICS_SECTOR_NAME,,True
+CRGY,CRGY US Equity,CRESCENT ENERGY INC-A,Energy,Energy,BBG013THLHZ4,True
+CRGY,__chosen__,CRGY US Equity,Energy,GICS_SECTOR_NAME,,True
+CRVL,CRVL US Equity,CORVEL CORP,Health Care,"Consumer, Non-cyclical",BBG000CVKZY0,True
+CRVL,__chosen__,CRVL US Equity,Health Care,GICS_SECTOR_NAME,,True
+CSV,CSV US Equity,CARRIAGE SERVICES INC,Consumer Discretionary,"Consumer, Non-cyclical",BBG000J06DW8,True
+CSV,__chosen__,CSV US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+CSW,CSW US Equity,CSW INDUSTRIALS INC,Industrials,Industrial,BBG007NLG4L3,True
+CSW,__chosen__,CSW US Equity,Industrials,GICS_SECTOR_NAME,,True
+CTBI,CTBI US Equity,COMMUNITY TRUST BANCORP INC,Financials,Financial,BBG000F4J227,True
+CTBI,__chosen__,CTBI US Equity,Financials,GICS_SECTOR_NAME,,True
+CTLT,CTLT US Equity,CATALENT INC,Health Care,"Consumer, Non-cyclical",BBG005XR47P5,True
+CTLT,__chosen__,CTLT US Equity,Health Care,GICS_SECTOR_NAME,,True
+CTRE,CTRE US Equity,CARETRUST REIT INC,Real Estate,Financial,BBG005KC4Z70,True
+CTRE,__chosen__,CTRE US Equity,Real Estate,GICS_SECTOR_NAME,,True
+CVCO,CVCO US Equity,CAVCO INDUSTRIES INC,Consumer Discretionary,"Consumer, Cyclical",BBG000K4WS65,True
+CVCO,__chosen__,CVCO US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+CVSA,CVSA US Equity,COVISTA INC,Consumer Discretionary,"Consumer, Non-cyclical",BBG000DQBZJ7,True
+CVSA,__chosen__,CVSA US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+DCO,DCO US Equity,DUCOMMUN INC,Industrials,Industrial,BBG000BH02M0,True
+DCO,__chosen__,DCO US Equity,Industrials,GICS_SECTOR_NAME,,True
+DGII,DGII US Equity,DIGI INTERNATIONAL INC,Information Technology,Technology,BBG000BZ50L0,True
+DGII,__chosen__,DGII US Equity,Information Technology,GICS_SECTOR_NAME,,True
+DHIL,DHIL US Equity,DIAMOND HILL INVESTMENT GRP,Financials,Financial,BBG000K7DJG8,True
+DHIL,__chosen__,DHIL US Equity,Financials,GICS_SECTOR_NAME,,True
+DORM,DORM US Equity,DORMAN PRODUCTS INC,Consumer Discretionary,"Consumer, Cyclical",BBG000BM22F5,True
+DORM,__chosen__,DORM US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+DV,DV US Equity,DOUBLEVERIFY HOLDINGS INC,Communication Services,Technology,BBG00ZNRRJM2,True
+DV,__chosen__,DV US Equity,Communication Services,GICS_SECTOR_NAME,,True
+DY,DY US Equity,DYCOM INDUSTRIES INC,Industrials,Industrial,BBG000C4SKT1,True
+DY,__chosen__,DY US Equity,Industrials,GICS_SECTOR_NAME,,True
+EBS,EBS US Equity,EMERGENT BIOSOLUTIONS INC,Health Care,"Consumer, Non-cyclical",BBG000GW06J7,True
+EBS,__chosen__,EBS US Equity,Health Care,GICS_SECTOR_NAME,,True
+ECPG,ECPG US Equity,ENCORE CAPITAL GROUP INC,Financials,Financial,BBG000F369C7,True
+ECPG,__chosen__,ECPG US Equity,Financials,GICS_SECTOR_NAME,,True
+ELF,ELF US Equity,ELF BEAUTY INC,Consumer Staples,"Consumer, Non-cyclical",BBG00DQ6VYP3,True
+ELF,__chosen__,ELF US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+ENSG,ENSG US Equity,ENSIGN GROUP INC/THE,Health Care,"Consumer, Non-cyclical",BBG000K1T9L0,True
+ENSG,__chosen__,ENSG US Equity,Health Care,GICS_SECTOR_NAME,,True
+ENVA,ENVA US Equity,ENOVA INTERNATIONAL INC,Financials,Financial,BBG0022PSJ14,True
+ENVA,__chosen__,ENVA US Equity,Financials,GICS_SECTOR_NAME,,True
+EPRT,EPRT US Equity,ESSENTIAL PROPERTIES REALTY,Real Estate,Financial,BBG00L17LGJ7,True
+EPRT,__chosen__,EPRT US Equity,Real Estate,GICS_SECTOR_NAME,,True
+EVRI,EVRI US Equity,EVERI HOLDINGS INC,Consumer Discretionary,"Consumer, Cyclical",BBG000H1B407,True
+EVRI,__chosen__,EVRI US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+EYE,EYE US Equity,NATIONAL VISION HOLDINGS INC,Consumer Discretionary,"Consumer, Cyclical",BBG00HVQF9K2,True
+EYE,__chosen__,EYE US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+FIZZ,FIZZ US Equity,NATIONAL BEVERAGE CORP,Consumer Staples,"Consumer, Non-cyclical",BBG000BF8CB6,True
+FIZZ,__chosen__,FIZZ US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+FLXS,FLXS US Equity,FLEXSTEEL INDS,Consumer Discretionary,"Consumer, Cyclical",BBG000BJNBB3,True
+FLXS,__chosen__,FLXS US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+FONR,FONR US Equity,FONAR CORP,Health Care,"Consumer, Non-cyclical",BBG000BJQYS2,True
+FONR,__chosen__,FONR US Equity,Health Care,GICS_SECTOR_NAME,,True
+FSS,FSS US Equity,FEDERAL SIGNAL CORP,Industrials,Industrial,BBG000BJXWX2,True
+FSS,__chosen__,FSS US Equity,Industrials,GICS_SECTOR_NAME,,True
+FUN,FUN US Equity,SIX FLAGS ENTERTAINMENT CORP,Consumer Discretionary,"Consumer, Cyclical",BBG01K8GRMX6,True
+FUN,__chosen__,FUN US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+GIC,GIC US Equity,GLOBAL INDUSTRIAL CO,Industrials,"Consumer, Cyclical",BBG000KFPB56,True
+GIC,__chosen__,GIC US Equity,Industrials,GICS_SECTOR_NAME,,True
+GLDD,GLDD US Equity,GREAT LAKES DREDGE & DOCK CO,Industrials,Industrial,BBG000QT43H8,True
+GLDD,__chosen__,GLDD US Equity,Industrials,GICS_SECTOR_NAME,,True
+GMED,GMED US Equity,GLOBUS MEDICAL INC - A,Health Care,"Consumer, Non-cyclical",BBG002V87SD0,True
+GMED,__chosen__,GMED US Equity,Health Care,GICS_SECTOR_NAME,,True
+GMS,GMS US Equity,GMS INC,Industrials,"Consumer, Cyclical",BBG009Q036D0,True
+GMS,__chosen__,GMS US Equity,Industrials,GICS_SECTOR_NAME,,True
+GOGO,GOGO US Equity,GOGO INC,Communication Services,Communications,BBG002CN8XN5,True
+GOGO,__chosen__,GOGO US Equity,Communication Services,GICS_SECTOR_NAME,,True
+GOLF,GOLF US Equity,ACUSHNET HOLDINGS CORP,Consumer Discretionary,"Consumer, Cyclical",BBG00D5L3SS4,True
+GOLF,__chosen__,GOLF US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+GOOD,GOOD US Equity,GLADSTONE COMMERCIAL CORP,Real Estate,Financial,BBG000M2NYQ2,True
+GOOD,__chosen__,GOOD US Equity,Real Estate,GICS_SECTOR_NAME,,True
+GRBK,GRBK US Equity,GREEN BRICK PARTNERS INC,Consumer Discretionary,"Consumer, Cyclical",BBG000QGYG84,True
+GRBK,__chosen__,GRBK US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+GSBC,GSBC US Equity,GREAT SOUTHERN BANCORP INC,Financials,Financial,BBG000C2W2R2,True
+GSBC,__chosen__,GSBC US Equity,Financials,GICS_SECTOR_NAME,,True
+GTES,GTES US Equity,GATES INDUSTRIAL CORP PLC,Industrials,Industrial,BBG00JM9V731,True
+GTES,__chosen__,GTES US Equity,Industrials,GICS_SECTOR_NAME,,True
+HALO,HALO US Equity,HALOZYME THERAPEUTICS INC,Health Care,"Consumer, Non-cyclical",BBG000CZ8W54,True
+HALO,__chosen__,HALO US Equity,Health Care,GICS_SECTOR_NAME,,True
+HCCI,HCCI US Equity,HERITAGE-CRYSTAL CLEAN INC,Industrials,Industrial,BBG000CCFB17,True
+HCCI,__chosen__,HCCI US Equity,Industrials,GICS_SECTOR_NAME,,True
+HLIT,HLIT US Equity,HARMONIC INC,Information Technology,Communications,BBG000BTXZ45,True
+HLIT,__chosen__,HLIT US Equity,Information Technology,GICS_SECTOR_NAME,,True
+HOMB,HOMB US Equity,HOME BANCSHARES INC,Financials,Financial,BBG000QJXDW9,True
+HOMB,__chosen__,HOMB US Equity,Financials,GICS_SECTOR_NAME,,True
+HUBG,HUBG US Equity,HUB GROUP INC-CL A,Industrials,Industrial,BBG000G9W6L0,True
+HUBG,__chosen__,HUBG US Equity,Industrials,GICS_SECTOR_NAME,,True
+HWKN,HWKN US Equity,HAWKINS INC,Materials,Basic Materials,BBG000BLLWV2,True
+HWKN,__chosen__,HWKN US Equity,Materials,GICS_SECTOR_NAME,,True
+IIPR,IIPR US Equity,INNOVATIVE INDUSTRIAL PROPER,Real Estate,Financial,BBG00F0SW7N8,True
+IIPR,__chosen__,IIPR US Equity,Real Estate,GICS_SECTOR_NAME,,True
+IMAX,IMAX US Equity,IMAX CORP,Communication Services,"Consumer, Cyclical",BBG000K8KKL9,True
+IMAX,__chosen__,IMAX US Equity,Communication Services,GICS_SECTOR_NAME,,True
+IMMR,IMMR US Equity,IMMERSION CORPORATION,Information Technology,Technology,BBG000C0ZCX4,True
+IMMR,__chosen__,IMMR US Equity,Information Technology,GICS_SECTOR_NAME,,True
+INVA,INVA US Equity,INNOVIVA INC,Health Care,"Consumer, Non-cyclical",BBG000CG9XT7,True
+INVA,__chosen__,INVA US Equity,Health Care,GICS_SECTOR_NAME,,True
+IPAR,IPAR US Equity,INTERPARFUMS INC,Consumer Staples,"Consumer, Non-cyclical",BBG000GCSWR5,True
+IPAR,__chosen__,IPAR US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+ITIC,ITIC US Equity,INVESTORS TITLE CO,Financials,Financial,BBG000BM9CT1,True
+ITIC,__chosen__,ITIC US Equity,Financials,GICS_SECTOR_NAME,,True
+IWM,IWM US Equity,ISHARES RUSSELL 2000 ETF,,Funds,BBG000CGC9C4,True
+IWM,__chosen__,IWM US Equity,Funds,INDUSTRY_SECTOR,,True
+KFY,KFY US Equity,KORN FERRY,Industrials,"Consumer, Non-cyclical",BBG000C5QMB5,True
+KFY,__chosen__,KFY US Equity,Industrials,GICS_SECTOR_NAME,,True
+KMPR,KMPR US Equity,KEMPER CORP,Financials,Financial,BBG000H3GDJ8,True
+KMPR,__chosen__,KMPR US Equity,Financials,GICS_SECTOR_NAME,,True
+LBRT,LBRT US Equity,LIBERTY ENERGY INC,Energy,Energy,BBG00GK831B6,True
+LBRT,__chosen__,LBRT US Equity,Energy,GICS_SECTOR_NAME,,True
+LGND,LGND US Equity,LIGAND PHARMACEUTICALS,Health Care,"Consumer, Non-cyclical",BBG000BKF014,True
+LGND,__chosen__,LGND US Equity,Health Care,GICS_SECTOR_NAME,,True
+LRN,LRN US Equity,STRIDE INC,Consumer Discretionary,"Consumer, Non-cyclical",BBG000QSXPZ9,True
+LRN,__chosen__,LRN US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+LUMN,LUMN US Equity,LUMEN TECHNOLOGIES INC,Communication Services,Communications,BBG000BGLRN3,True
+LUMN,__chosen__,LUMN US Equity,Communication Services,GICS_SECTOR_NAME,,True
+MANT,MANT US Equity,MANTECH INTERNATIONAL CORP-A,Industrials,Technology,BBG000BGF8B5,True
+MANT,__chosen__,MANT US Equity,Industrials,GICS_SECTOR_NAME,,True
+MBUU,MBUU US Equity,MALIBU BOATS INC - A,Consumer Discretionary,"Consumer, Cyclical",BBG005PXTR70,True
+MBUU,__chosen__,MBUU US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+MCBC,MCBC US Equity,MACATAWA BANK CORP,Financials,Financial,BBG000BHXPK5,True
+MCBC,__chosen__,MCBC US Equity,Financials,GICS_SECTOR_NAME,,True
+MCRI,MCRI US Equity,MONARCH CASINO & RESORT INC,Consumer Discretionary,"Consumer, Cyclical",BBG000BJ0932,True
+MCRI,__chosen__,MCRI US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+MED,MED US Equity,MEDIFAST INC,Consumer Staples,"Consumer, Non-cyclical",BBG000BWBW76,True
+MED,__chosen__,MED US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+MEI,MEI US Equity,METHODE ELECTRONICS INC,Information Technology,"Consumer, Cyclical",BBG000BNY197,True
+MEI,__chosen__,MEI US Equity,Information Technology,GICS_SECTOR_NAME,,True
+MGPI,MGPI US Equity,MGP INGREDIENTS INC,Consumer Staples,"Consumer, Non-cyclical",BBG000BXK6C5,True
+MGPI,__chosen__,MGPI US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+MIME,MIME US Equity,MIMECAST LTD,Information Technology,Communications,BBG00B6W26V8,True
+MIME,__chosen__,MIME US Equity,Information Technology,GICS_SECTOR_NAME,,True
+MNR,MNR US Equity,MACH NATURAL RESOURCES LP,Energy,Energy,BBG01JJ2Q5R3,True
+MNR,__chosen__,MNR US Equity,Energy,GICS_SECTOR_NAME,,True
+MOG A,MOG A US Equity,,,,,False
+MOG A,MOG/A US Equity,MOOG INC-CLASS A,Industrials,Industrial,BBG000BP7RH6,True
+MOG A,__chosen__,MOG/A US Equity,Industrials,GICS_SECTOR_NAME,,True
+MRLN,MRLN US Equity,MARLIN BUSINESS SERVICES INC,Financials,Financial,BBG000BN5MG5,True
+MRLN,__chosen__,MRLN US Equity,Financials,GICS_SECTOR_NAME,,True
+MTRN,MTRN US Equity,MATERION CORP,Materials,Industrial,BBG000BDTT76,True
+MTRN,__chosen__,MTRN US Equity,Materials,GICS_SECTOR_NAME,,True
+MTX,MTX US Equity,MINERALS TECHNOLOGIES INC,Materials,Basic Materials,BBG000BB61F7,True
+MTX,__chosen__,MTX US Equity,Materials,GICS_SECTOR_NAME,,True
+MYGN,MYGN US Equity,MYRIAD GENETICS INC,Health Care,"Consumer, Non-cyclical",BBG000D9H9F1,True
+MYGN,__chosen__,MYGN US Equity,Health Care,GICS_SECTOR_NAME,,True
+MYRG,MYRG US Equity,MYR GROUP INC/DELAWARE,Industrials,Industrial,BBG000BC7VW9,True
+MYRG,__chosen__,MYRG US Equity,Industrials,GICS_SECTOR_NAME,,True
+MZTI,MZTI US Equity,MARZETTI COMPANY/THE,Consumer Staples,"Consumer, Non-cyclical",BBG000BN1M88,True
+MZTI,__chosen__,MZTI US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+NATL,NATL US Equity,NCR ATLEOS CORP,Financials,Technology,BBG019Y0WP19,True
+NATL,__chosen__,NATL US Equity,Financials,GICS_SECTOR_NAME,,True
+NEO,NEO US Equity,NEOGENOMICS INC,Health Care,"Consumer, Non-cyclical",BBG000BKH263,True
+NEO,__chosen__,NEO US Equity,Health Care,GICS_SECTOR_NAME,,True
+NMIH,NMIH US Equity,NMI HOLDINGS INC,Financials,Financial,BBG005DLMMZ6,True
+NMIH,__chosen__,NMIH US Equity,Financials,GICS_SECTOR_NAME,,True
+NMRK,NMRK US Equity,NEWMARK GROUP INC-CLASS A,Real Estate,Financial,BBG00J24S765,True
+NMRK,__chosen__,NMRK US Equity,Real Estate,GICS_SECTOR_NAME,,True
+NVEC,NVEC US Equity,NVE CORP,Information Technology,Industrial,BBG000N22GR2,True
+NVEC,__chosen__,NVEC US Equity,Information Technology,GICS_SECTOR_NAME,,True
+NVEE,NVEE US Equity,NV5 GLOBAL INC,Industrials,Industrial,BBG005BT60Y8,True
+NVEE,__chosen__,NVEE US Equity,Industrials,GICS_SECTOR_NAME,,True
+NVRI,NVRI US Equity,ENVIRI CORP,Industrials,Industrial,BBG000BLH3P8,True
+NVRI,__chosen__,NVRI US Equity,Industrials,GICS_SECTOR_NAME,,True
+NWE,NWE US Equity,NORTHWESTERN ENERGY GROUP IN,Utilities,Utilities,BBG000Q1NMJ4,True
+NWE,__chosen__,NWE US Equity,Utilities,GICS_SECTOR_NAME,,True
+NXST,NXST US Equity,NEXSTAR MEDIA GROUP INC,Communication Services,Communications,BBG000DZJVH0,True
+NXST,__chosen__,NXST US Equity,Communication Services,GICS_SECTOR_NAME,,True
+OEC,OEC US Equity,ORION SA,Materials,Basic Materials,BBG006MC4LP7,True
+OEC,__chosen__,OEC US Equity,Materials,GICS_SECTOR_NAME,,True
+OGS,OGS US Equity,ONE GAS INC,Utilities,Utilities,BBG004WQKD07,True
+OGS,__chosen__,OGS US Equity,Utilities,GICS_SECTOR_NAME,,True
+OPK,OPK US Equity,OPKO HEALTH INC,Health Care,"Consumer, Non-cyclical",BBG000N49069,True
+OPK,__chosen__,OPK US Equity,Health Care,GICS_SECTOR_NAME,,True
+ORA,ORA US Equity,ORMAT TECHNOLOGIES INC,Utilities,Utilities,BBG000Q5BQ63,True
+ORA,__chosen__,ORA US Equity,Utilities,GICS_SECTOR_NAME,,True
+OTTR,OTTR US Equity,OTTER TAIL CORP,Utilities,Utilities,BBG000BQNM78,True
+OTTR,__chosen__,OTTR US Equity,Utilities,GICS_SECTOR_NAME,,True
+OXM,OXM US Equity,OXFORD INDUSTRIES INC,Consumer Discretionary,"Consumer, Cyclical",BBG000BQPRQ4,True
+OXM,__chosen__,OXM US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+PAYO,PAYO US Equity,PAYONEER GLOBAL INC,Financials,"Consumer, Non-cyclical",BBG00Z5JLLB3,True
+PAYO,__chosen__,PAYO US Equity,Financials,GICS_SECTOR_NAME,,True
+PBH,PBH US Equity,PRESTIGE CONSUMER HEALTHCARE,Health Care,"Consumer, Non-cyclical",BBG000QM0RZ4,True
+PBH,__chosen__,PBH US Equity,Health Care,GICS_SECTOR_NAME,,True
+PENG,PENG US Equity,PENGUIN SOLUTIONS INC,Information Technology,Technology,BBG00GLTQCX6,True
+PENG,__chosen__,PENG US Equity,Information Technology,GICS_SECTOR_NAME,,True
+PFBC,PFBC US Equity,PREFERRED BANK/LOS ANGELES,Financials,Financial,BBG000BRF6K5,True
+PFBC,__chosen__,PFBC US Equity,Financials,GICS_SECTOR_NAME,,True
+PGNY,PGNY US Equity,PROGYNY INC,Health Care,"Consumer, Non-cyclical",BBG002H1K1H1,True
+PGNY,__chosen__,PGNY US Equity,Health Care,GICS_SECTOR_NAME,,True
+PLAY,PLAY US Equity,DAVE & BUSTER'S ENTERTAINMEN,Consumer Discretionary,"Consumer, Cyclical",BBG001WWJTK5,True
+PLAY,__chosen__,PLAY US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+PLNT,PLNT US Equity,PLANET FITNESS INC - CL A,Consumer Discretionary,"Consumer, Cyclical",BBG009H04M17,True
+PLNT,__chosen__,PLNT US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+POR,POR US Equity,PORTLAND GENERAL ELECTRIC CO,Utilities,Utilities,BBG000BCRMW7,True
+POR,__chosen__,POR US Equity,Utilities,GICS_SECTOR_NAME,,True
+PRDO,PRDO US Equity,PERDOCEO EDUCATION CORP,Consumer Discretionary,"Consumer, Non-cyclical",BBG000BDCQ25,True
+PRDO,__chosen__,PRDO US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+PRFT,PRFT US Equity,PERFICIENT INC,Information Technology,Communications,BBG000BVXFK6,True
+PRFT,__chosen__,PRFT US Equity,Information Technology,GICS_SECTOR_NAME,,True
+PRGS,PRGS US Equity,PROGRESS SOFTWARE CORP,Information Technology,Technology,BBG000C4QP94,True
+PRGS,__chosen__,PRGS US Equity,Information Technology,GICS_SECTOR_NAME,,True
+QLYS,QLYS US Equity,QUALYS INC,Information Technology,Technology,BBG000HT5G06,True
+QLYS,__chosen__,QLYS US Equity,Information Technology,GICS_SECTOR_NAME,,True
+QRVO,QRVO US Equity,QORVO INC,Information Technology,Technology,BBG007TJF1N7,True
+QRVO,__chosen__,QRVO US Equity,Information Technology,GICS_SECTOR_NAME,,True
+RAMP,RAMP US Equity,LIVERAMP HOLDINGS INC,Information Technology,Technology,BBG000BB4HM6,True
+RAMP,__chosen__,RAMP US Equity,Information Technology,GICS_SECTOR_NAME,,True
+RGEN,RGEN US Equity,REPLIGEN CORP,Health Care,"Consumer, Non-cyclical",BBG000BS48J3,True
+RGEN,__chosen__,RGEN US Equity,Health Care,GICS_SECTOR_NAME,,True
+RHP,RHP US Equity,RYMAN HOSPITALITY PROPERTIES,Real Estate,Financial,BBG000BDVP80,True
+RHP,__chosen__,RHP US Equity,Real Estate,GICS_SECTOR_NAME,,True
+RLJ,RLJ US Equity,RLJ LODGING TRUST,Real Estate,Financial,BBG001HPC9F4,True
+RLJ,__chosen__,RLJ US Equity,Real Estate,GICS_SECTOR_NAME,,True
+ROCC,ROCC US Equity,RANGER OIL CORP-A,Energy,Energy,BBG00F7W51G3,True
+ROCC,__chosen__,ROCC US Equity,Energy,GICS_SECTOR_NAME,,True
+RPD,RPD US Equity,RAPID7 INC,Information Technology,Technology,BBG009DFHWG6,True
+RPD,__chosen__,RPD US Equity,Information Technology,GICS_SECTOR_NAME,,True
+SASR,SASR US Equity,SANDY SPRING BANCORP INC,Financials,Financial,BBG000BR83Z4,True
+SASR,__chosen__,SASR US Equity,Financials,GICS_SECTOR_NAME,,True
+SAVEQ,SAVEQ US Equity,SPIRIT AIRLINES INC,Industrials,"Consumer, Cyclical",BBG000BF6RQ9,True
+SAVEQ,__chosen__,SAVEQ US Equity,Industrials,GICS_SECTOR_NAME,,True
+SEE,SEE US Equity,SEALED AIR CORP,Materials,Industrial,BBG000C22QV7,True
+SEE,__chosen__,SEE US Equity,Materials,GICS_SECTOR_NAME,,True
+SLAB,SLAB US Equity,SILICON LABORATORIES INC,Information Technology,Technology,BBG000BB99S3,True
+SLAB,__chosen__,SLAB US Equity,Information Technology,GICS_SECTOR_NAME,,True
+SLQT,SLQT US Equity,SELECTQUOTE INC,Financials,Financial,BBG000GTP1B6,True
+SLQT,__chosen__,SLQT US Equity,Financials,GICS_SECTOR_NAME,,True
+SMTC,SMTC US Equity,SEMTECH CORP,Information Technology,Technology,BBG000DBKR53,True
+SMTC,__chosen__,SMTC US Equity,Information Technology,GICS_SECTOR_NAME,,True
+SPSC,SPSC US Equity,SPS COMMERCE INC,Information Technology,Technology,BBG000PZGB75,True
+SPSC,__chosen__,SPSC US Equity,Information Technology,GICS_SECTOR_NAME,,True
+SSD,SSD US Equity,SIMPSON MANUFACTURING CO INC,Industrials,Industrial,BBG000JLC8L8,True
+SSD,__chosen__,SSD US Equity,Industrials,GICS_SECTOR_NAME,,True
+SSTK,SSTK US Equity,SHUTTERSTOCK INC,Communication Services,Communications,BBG002ZCK2V9,True
+SSTK,__chosen__,SSTK US Equity,Communication Services,GICS_SECTOR_NAME,,True
+STAG,STAG US Equity,STAG INDUSTRIAL INC,Real Estate,Financial,BBG000BGLFP7,True
+STAG,__chosen__,STAG US Equity,Real Estate,GICS_SECTOR_NAME,,True
+STRA,STRA US Equity,STRATEGIC EDUCATION INC,Consumer Discretionary,"Consumer, Non-cyclical",BBG000GRZDV1,True
+STRA,__chosen__,STRA US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+SUPN,SUPN US Equity,SUPERNUS PHARMACEUTICALS INC,Health Care,"Consumer, Non-cyclical",BBG000BP0HX7,True
+SUPN,__chosen__,SUPN US Equity,Health Care,GICS_SECTOR_NAME,,True
+TDS,TDS US Equity,TELEPHONE AND DATA SYSTEMS,Communication Services,Communications,BBG000BV0VK7,True
+TDS,__chosen__,TDS US Equity,Communication Services,GICS_SECTOR_NAME,,True
+TECD,TECD US Equity,TECH DATA CORP,Information Technology,Industrial,BBG000BV2BR2,True
+TECD,__chosen__,TECD US Equity,Information Technology,GICS_SECTOR_NAME,,True
+TGNA,TGNA US Equity,TEGNA INC,Communication Services,Communications,BBG000BK5DP1,True
+TGNA,__chosen__,TGNA US Equity,Communication Services,GICS_SECTOR_NAME,,True
+TH,TH US Equity,TARGET HOSPITALITY CORP,Consumer Discretionary,"Consumer, Non-cyclical",BBG00K7K3474,True
+TH,__chosen__,TH US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+THR,THR US Equity,THERMON GROUP HOLDINGS INC,Industrials,Industrial,BBG001HNSYT2,True
+THR,__chosen__,THR US Equity,Industrials,GICS_SECTOR_NAME,,True
+TREX,TREX US Equity,TREX COMPANY INC,Industrials,Industrial,BBG000BTGKK9,True
+TREX,__chosen__,TREX US Equity,Industrials,GICS_SECTOR_NAME,,True
+TRHC,TRHC US Equity,TABULA RASA HEALTHCARE INC,Health Care,Technology,BBG00BT7PPY8,True
+TRHC,__chosen__,TRHC US Equity,Health Care,GICS_SECTOR_NAME,,True
+TROX,TROX US Equity,TRONOX HOLDINGS PLC,Materials,Basic Materials,BBG00MRH2W10,True
+TROX,__chosen__,TROX US Equity,Materials,GICS_SECTOR_NAME,,True
+TTEC,TTEC US Equity,TTEC HOLDINGS INC,Industrials,Technology,BBG000C4NJF4,True
+TTEC,__chosen__,TTEC US Equity,Industrials,GICS_SECTOR_NAME,,True
+TWNK,TWNK US Equity,HOSTESS BRANDS INC,Consumer Staples,"Consumer, Non-cyclical",BBG00B6KGNN1,True
+TWNK,__chosen__,TWNK US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+UFPT,UFPT US Equity,UFP TECHNOLOGIES INC,Health Care,"Consumer, Non-cyclical",BBG000BJBZK3,True
+UFPT,__chosen__,UFPT US Equity,Health Care,GICS_SECTOR_NAME,,True
+UNFI,UNFI US Equity,UNITED NATURAL FOODS INC,Consumer Staples,"Consumer, Non-cyclical",BBG000BXB1M5,True
+UNFI,__chosen__,UNFI US Equity,Consumer Staples,GICS_SECTOR_NAME,,True
+UNTY,UNTY US Equity,UNITY BANCORP INC,Financials,Financial,BBG000K0KW21,True
+UNTY,__chosen__,UNTY US Equity,Financials,GICS_SECTOR_NAME,,True
+UPLD,UPLD US Equity,UPLAND SOFTWARE INC,Information Technology,Technology,BBG005KC3JR5,True
+UPLD,__chosen__,UPLD US Equity,Information Technology,GICS_SECTOR_NAME,,True
+UVE,UVE US Equity,UNIVERSAL INSURANCE HOLDINGS,Financials,Financial,BBG000B9YY14,True
+UVE,__chosen__,UVE US Equity,Financials,GICS_SECTOR_NAME,,True
+VECO,VECO US Equity,VEECO INSTRUMENTS INC,Information Technology,Technology,BBG000BDCB28,True
+VECO,__chosen__,VECO US Equity,Information Technology,GICS_SECTOR_NAME,,True
+VIAV,VIAV US Equity,VIAVI SOLUTIONS INC,Information Technology,Communications,BBG000BP7JB0,True
+VIAV,__chosen__,VIAV US Equity,Information Technology,GICS_SECTOR_NAME,,True
+VNDA,VNDA US Equity,VANDA PHARMACEUTICALS INC,Health Care,"Consumer, Non-cyclical",BBG000HT5MG6,True
+VNDA,__chosen__,VNDA US Equity,Health Care,GICS_SECTOR_NAME,,True
+VRNT,VRNT US Equity,VERINT SYSTEMS INC,Information Technology,Technology,BBG000BCBYT2,True
+VRNT,__chosen__,VRNT US Equity,Information Technology,GICS_SECTOR_NAME,,True
+VSH,VSH US Equity,VISHAY INTERTECHNOLOGY INC,Information Technology,Industrial,BBG000BWKB81,True
+VSH,__chosen__,VSH US Equity,Information Technology,GICS_SECTOR_NAME,,True
+WASH,WASH US Equity,WASHINGTON TRUST BANCORP,Financials,Financial,BBG000BWLZX9,True
+WASH,__chosen__,WASH US Equity,Financials,GICS_SECTOR_NAME,,True
+WLDN,WLDN US Equity,WILLDAN GROUP INC,Industrials,"Consumer, Non-cyclical",BBG000Q1CKB8,True
+WLDN,__chosen__,WLDN US Equity,Industrials,GICS_SECTOR_NAME,,True
+WSFS,WSFS US Equity,WSFS FINANCIAL CORP,Financials,Financial,BBG000BX1C88,True
+WSFS,__chosen__,WSFS US Equity,Financials,GICS_SECTOR_NAME,,True
+WTBA,WTBA US Equity,WEST BANCORPORATION,Financials,Financial,BBG000BB0WY4,True
+WTBA,__chosen__,WTBA US Equity,Financials,GICS_SECTOR_NAME,,True
+YETI,YETI US Equity,YETI HOLDINGS INC,Consumer Discretionary,"Consumer, Cyclical",BBG00D8JC882,True
+YETI,__chosen__,YETI US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+ZAGG,ZAGG US Equity,ZAGG INC,Consumer Discretionary,Industrial,BBG000DR8FW8,True
+ZAGG,__chosen__,ZAGG US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True
+ZD,ZD US Equity,ZIFF DAVIS INC,Communication Services,Communications,BBG000F3CWW7,True
+ZD,__chosen__,ZD US Equity,Communication Services,GICS_SECTOR_NAME,,True
+ZUMZ,ZUMZ US Equity,ZUMIEZ INC,Consumer Discretionary,"Consumer, Cyclical",BBG000PYX812,True
+ZUMZ,__chosen__,ZUMZ US Equity,Consumer Discretionary,GICS_SECTOR_NAME,,True

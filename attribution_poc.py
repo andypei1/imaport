@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -31,7 +31,7 @@ except Exception:  # pragma: no cover - optional dependency in cloud/offline mod
     blpapi = None
 
 from src.portfolio.cash import build_cash_ledger
-from src.portfolio.load_transactions import load_transactions
+from src.portfolio.load_transactions import load_transactions, POSITION_ADDITION_TYPES
 from src.portfolio.nav import compute_daily_nav
 from src.portfolio.positions import build_positions
 from src.portfolio.prices import get_prices
@@ -455,6 +455,7 @@ def _portfolio_security_panel(
     nav_df: pd.DataFrame,
     sector_by_symbol: dict[str, str],
     trading_dates: pd.DatetimeIndex | None = None,
+    split_events_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     pos = positions_df.copy()
     px = prices_df.copy()
@@ -469,8 +470,6 @@ def _portfolio_security_panel(
     if trading_dates is not None:
         # Restrict to target trading dates before return calc to avoid holiday/weekend artifacts.
         px_wide = px_wide.reindex(pd.DatetimeIndex(sorted(pd.to_datetime(trading_dates).unique()))).ffill()
-    ret_wide = px_wide.pct_change()
-
     pos_wide = pos.pivot_table(index="date", columns="symbol", values="shares", aggfunc="last")
     pos_wide = pos_wide.sort_index().ffill().fillna(0)
 
@@ -479,10 +478,26 @@ def _portfolio_security_panel(
         common_dates = common_dates.intersection(trading_dates)
     pos_wide = pos_wide.reindex(common_dates)
     px_wide = px_wide.reindex(common_dates)
-    ret_wide = ret_wide.reindex(common_dates)
 
+    ret_wide = px_wide.pct_change()
     mv_wide = pos_wide.clip(lower=0) * px_wide
     mv_prev = mv_wide.shift(1)
+
+    # Split-aware return adjustment:
+    # start from price return, and only on explicit split/corporate-action dates
+    # adjust by share-ratio so mechanical split moves don't appear as performance.
+    if split_events_df is not None and not split_events_df.empty:
+        se = split_events_df.copy()
+        se["date"] = pd.to_datetime(se["date"]).dt.normalize()
+        se = se[(se["date"].isin(common_dates)) & (se["symbol"].isin(ret_wide.columns))]
+        if not se.empty:
+            split_mask = pd.DataFrame(False, index=ret_wide.index, columns=ret_wide.columns)
+            for _, r in se.iterrows():
+                split_mask.at[pd.to_datetime(r["date"]).normalize(), str(r["symbol"])] = True
+            share_ratio = (pos_wide / pos_wide.shift(1)).replace([float("inf"), float("-inf")], pd.NA).fillna(1.0)
+            share_ratio = share_ratio.where(share_ratio > 0, 1.0)
+            ret_split_adj = ((1.0 + ret_wide) * share_ratio) - 1.0
+            ret_wide = ret_wide.where(~split_mask, ret_split_adj)
 
     nav = nav.set_index("date").reindex(common_dates)
     nav_prev = nav["nav"].shift(1)
@@ -633,17 +648,171 @@ def _compute_benchmark_sector_model_from_sector_indices(
     return out[["date", "sector", "w_b", "r_b_s", "r_b_model"]]
 
 
+def _cache_paths(repo: Path) -> dict[str, Path]:
+    cdir = repo / "outputs" / "cache"
+    cdir.mkdir(parents=True, exist_ok=True)
+    return {
+        "prices": cdir / "portfolio_prices.csv",
+        "benchmark": cdir / "benchmark_px.csv",
+        "sector_model": cdir / "benchmark_sector_model.csv",
+        "sector_map": cdir / "portfolio_sector_map.csv",
+        "sector_debug": cdir / "sector_resolution_debug.csv",
+    }
+
+
+def _load_cache_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    return df
+
+
+def _merge_cache(existing: pd.DataFrame, new: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    if existing is None or existing.empty:
+        return new.copy()
+    if new is None or new.empty:
+        return existing.copy()
+    out = pd.concat([existing, new], ignore_index=True)
+    out = out.drop_duplicates(subset=keys, keep="last")
+    sort_cols = [c for c in ["date", "symbol", "sector"] if c in out.columns]
+    if sort_cols:
+        out = out.sort_values(sort_cols).reset_index(drop=True)
+    return out
+
+
+def _prices_cover_window(price_cache: pd.DataFrame, symbols: list[str], start: pd.Timestamp, end: pd.Timestamp) -> bool:
+    if price_cache.empty or not symbols:
+        return False
+    p = price_cache.copy()
+    if "date" not in p.columns or "symbol" not in p.columns:
+        return False
+    p["date"] = pd.to_datetime(p["date"]).dt.normalize()
+    for sym in symbols:
+        s = p[p["symbol"] == sym]
+        if s.empty:
+            return False
+        if s["date"].min() > start or s["date"].max() < end:
+            return False
+    return True
+
+
+def _dates_cover_window(df: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> bool:
+    if df.empty or "date" not in df.columns:
+        return False
+    d = pd.to_datetime(df["date"]).dt.normalize()
+    return d.min() <= start and d.max() >= end
+
+
+def refresh_bloomberg_cache(
+    repo: Path,
+    start_date: pd.Timestamp | None = None,
+    end_date: pd.Timestamp | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> None:
+    def emit(pct: int, msg: str) -> None:
+        if progress_callback is not None:
+            progress_callback(pct, msg)
+
+    emit(5, "Loading transactions for cache refresh")
+    trades_df, cashflows_df = load_transactions(str(repo / "Transactions.csv"))
+    cash_df = build_cash_ledger(trades_df, cashflows_df)
+    raw_min = pd.to_datetime(cash_df["date"]).min().normalize()
+    raw_max = pd.to_datetime(cash_df["date"]).max().normalize()
+    fetch_start = pd.to_datetime(start_date).normalize() if start_date is not None else raw_min
+    fetch_end = pd.to_datetime(end_date).normalize() if end_date is not None else pd.Timestamp.today().normalize()
+    if fetch_end < fetch_start:
+        raise ValueError("Cache refresh end_date must be >= start_date")
+
+    symbols = sorted(build_positions(trades_df)["symbol"].unique().tolist())
+    inputs_dir = repo / "inputs"
+    alias_path = inputs_dir / "symbol_aliases.csv" if inputs_dir.exists() else None
+    manual_prices_path = inputs_dir / "manual_prices.csv" if inputs_dir.exists() else None
+    paths = _cache_paths(repo)
+
+    emit(20, "Refreshing portfolio price cache")
+    new_prices = get_prices(
+        symbols,
+        fetch_start,
+        fetch_end,
+        alias_path=alias_path,
+        manual_prices_path=manual_prices_path,
+        trades_for_fallback=trades_df,
+    )
+    old_prices = _load_cache_csv(paths["prices"])
+    all_prices = _merge_cache(old_prices, new_prices, ["date", "symbol"])
+    _safe_to_csv(all_prices, paths["prices"])
+
+    emit(45, "Refreshing benchmark and sector caches")
+    cfg = BloombergConfig()
+    with BloombergClient(cfg) as bbg:
+        # Benchmark total-return index (dividends reinvested) for headline benchmark return.
+        bench_tri = bbg.get_historical_field(
+            {"_benchmark_": cfg.benchmark},
+            "TOT_RETURN_INDEX_GROSS_DVDS",
+            fetch_start - pd.Timedelta(days=10),
+            fetch_end,
+        )
+        bench_px = bench_tri.rename(columns={"symbol": "benchmark", "value": "tri"}).sort_values("date")
+        bench_px["benchmark"] = cfg.benchmark
+        bench_px["benchmark_return"] = bench_px["tri"].pct_change()
+        bench_dates = pd.DatetimeIndex(bench_px.loc[bench_px["benchmark_return"].notna(), "date"])
+        bench_dates = bench_dates[(bench_dates >= fetch_start) & (bench_dates <= fetch_end)]
+        if bench_dates.empty:
+            bench_dates = pd.DatetimeIndex(bench_px["date"].dropna().unique())
+
+        alias_map = _load_alias_map(alias_path)
+        sector_map, sector_debug = _resolve_sector_by_symbol_with_debug(
+            bbg,
+            symbols,
+            alias_map=alias_map,
+        )
+        b_sec = _compute_benchmark_sector_model_from_sector_indices(
+            bbg,
+            cfg.benchmark,
+            fetch_start - pd.Timedelta(days=10),
+            fetch_end,
+            bench_dates,
+        )
+
+    old_bench = _load_cache_csv(paths["benchmark"])
+    all_bench = _merge_cache(old_bench, bench_px[["date", "benchmark", "tri", "benchmark_return"]], ["date"])
+    _safe_to_csv(all_bench, paths["benchmark"])
+
+    old_bsec = _load_cache_csv(paths["sector_model"])
+    all_bsec = _merge_cache(old_bsec, b_sec, ["date", "sector"])
+    _safe_to_csv(all_bsec, paths["sector_model"])
+
+    sec_map_df = pd.DataFrame({"symbol": list(sector_map.keys()), "sector": list(sector_map.values())})
+    old_smap = _load_cache_csv(paths["sector_map"])
+    all_smap = _merge_cache(old_smap, sec_map_df, ["symbol"])
+    _safe_to_csv(all_smap, paths["sector_map"])
+
+    old_dbg = _load_cache_csv(paths["sector_debug"])
+    all_dbg = _merge_cache(old_dbg, sector_debug, ["symbol", "candidate_security"])
+    _safe_to_csv(all_dbg, paths["sector_debug"])
+    emit(100, "Bloomberg cache refresh complete")
+
+
 def run_attribution_poc(
     repo: Path,
     lookback_days: int | None = None,
     start_date: pd.Timestamp | None = None,
     end_date: pd.Timestamp | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
 ) -> None:
+    def emit(pct: int, msg: str) -> None:
+        if progress_callback is not None:
+            progress_callback(pct, msg)
+
+    emit(5, "Loading transactions")
     transactions_path = repo / "Transactions.csv"
     if not transactions_path.exists():
         raise FileNotFoundError(f"Transactions file not found: {transactions_path}")
 
     trades_df, cashflows_df = load_transactions(str(transactions_path))
+    emit(10, "Building positions and cash ledger")
     positions_df = build_positions(trades_df)
     cash_df = build_cash_ledger(trades_df, cashflows_df)
 
@@ -658,82 +827,98 @@ def run_attribution_poc(
     if date_min > date_max:
         raise ValueError(f"Invalid window after clipping to transaction range: {date_min.date()} to {date_max.date()}")
 
-    # Extend analysis window to latest benchmark trading date available in Bloomberg.
-    cfg = BloombergConfig()
-    with BloombergClient(cfg) as bbg:
-        bench_probe = bbg.get_historical_px_last(
-            {cfg.benchmark: cfg.benchmark},
-            date_max - pd.Timedelta(days=14),
-            pd.Timestamp.today().normalize(),
-        )
-    if not bench_probe.empty:
-        bench_max = pd.to_datetime(bench_probe["date"]).max().normalize()
-        if end_date is None and bench_max > date_max:
-            date_max = bench_max
-        if end_date is not None:
-            date_max = min(date_max, bench_max)
-
+    emit(20, "Checking cache coverage")
     symbols = sorted(positions_df["symbol"].unique().tolist())
     inputs_dir = repo / "inputs"
     alias_path = inputs_dir / "symbol_aliases.csv" if inputs_dir.exists() else None
     manual_prices_path = inputs_dir / "manual_prices.csv" if inputs_dir.exists() else None
+    paths = _cache_paths(repo)
+    price_cache = _load_cache_csv(paths["prices"])
+    bench_cache = _load_cache_csv(paths["benchmark"])
+    bsec_cache = _load_cache_csv(paths["sector_model"])
+    smap_cache = _load_cache_csv(paths["sector_map"])
 
-    prices_df = get_prices(
-        symbols,
-        date_min,
-        date_max,
-        alias_path=alias_path,
-        manual_prices_path=manual_prices_path,
-        trades_for_fallback=trades_df,
+    need_refresh = (
+        not _prices_cover_window(price_cache, symbols, date_min, date_max)
+        or not _dates_cover_window(bench_cache, date_min - pd.Timedelta(days=1), date_max)
+        or not _dates_cover_window(bsec_cache, date_min, date_max)
+        or smap_cache.empty
     )
+    if need_refresh:
+        emit(25, "Refreshing missing Bloomberg cache range")
+        refresh_bloomberg_cache(
+            repo,
+            start_date=date_min - pd.Timedelta(days=10),
+            end_date=max(date_max, pd.Timestamp.today().normalize()),
+            progress_callback=progress_callback,
+        )
+        price_cache = _load_cache_csv(paths["prices"])
+        bench_cache = _load_cache_csv(paths["benchmark"])
+        bsec_cache = _load_cache_csv(paths["sector_model"])
+        smap_cache = _load_cache_csv(paths["sector_map"])
+
+    emit(30, "Loading prices from cache")
+    prices_df = price_cache[
+        price_cache["symbol"].isin(symbols)
+        & (pd.to_datetime(price_cache["date"]).dt.normalize() >= (date_min - pd.Timedelta(days=40)))
+        & (pd.to_datetime(price_cache["date"]).dt.normalize() <= date_max)
+    ][["date", "symbol", "price"]].copy()
 
     # Limit working set to window and extend to latest benchmark date.
     positions_df = positions_df[pd.to_datetime(positions_df["date"]).dt.normalize().between(date_min, date_max)].copy()
     cash_df = cash_df[pd.to_datetime(cash_df["date"]).dt.normalize().between(date_min, date_max)].copy()
     positions_df, cash_df = _extend_positions_and_cash_to_date(positions_df, cash_df, date_max)
+    emit(40, "Computing portfolio NAV")
     nav_df = compute_daily_nav(positions_df, cash_df, prices_df)
 
     out_dir = repo / "outputs"
     out_dir.mkdir(exist_ok=True)
+    emit(50, "Loading benchmark and sector model from cache")
+    cfg = BloombergConfig()
+    bench_px = bench_cache.copy()
+    bench_px["date"] = pd.to_datetime(bench_px["date"]).dt.normalize()
+    if "benchmark" not in bench_px.columns:
+        bench_px["benchmark"] = cfg.benchmark
+    if "tri" not in bench_px.columns and "price" in bench_px.columns:
+        bench_px["tri"] = bench_px["price"]
+    if "benchmark_return" not in bench_px.columns:
+        bench_px = bench_px.sort_values("date")
+        base_col = "tri" if "tri" in bench_px.columns else "price"
+        bench_px["benchmark_return"] = bench_px[base_col].pct_change()
+    bench_px = bench_px.sort_values("date").drop_duplicates(subset=["date"], keep="last")
+    bench_px = bench_px[(bench_px["date"] >= (date_min - pd.Timedelta(days=1))) & (bench_px["date"] <= date_max)].copy()
+    benchmark_dates = pd.DatetimeIndex(bench_px.loc[bench_px["benchmark_return"].notna(), "date"].sort_values().unique())
+    benchmark_dates = benchmark_dates[(benchmark_dates >= date_min) & (benchmark_dates <= date_max)]
+    if benchmark_dates.empty:
+        raise RuntimeError("Benchmark cache has no returns in the requested window. Refresh Bloomberg cache first.")
 
-    fetch_start = date_min - pd.Timedelta(days=10)
-    with BloombergClient(cfg) as bbg:
-        # Benchmark (true S&P 600 index return).
-        bench_px = bbg.get_historical_px_last({cfg.benchmark: cfg.benchmark}, fetch_start, date_max)
-        bench_px = bench_px.rename(columns={"symbol": "benchmark"}).sort_values("date")
-        bench_px["benchmark_return"] = bench_px["price"].pct_change()
-        benchmark_dates = pd.DatetimeIndex(
-            bench_px.loc[bench_px["benchmark_return"].notna(), "date"].sort_values().unique()
-        )
-        benchmark_dates = benchmark_dates[(benchmark_dates >= date_min) & (benchmark_dates <= date_max)]
+    sector_by_symbol = (
+        smap_cache[smap_cache["symbol"].isin(symbols)]
+        .drop_duplicates("symbol", keep="last")
+        .set_index("symbol")["sector"]
+        .astype(str)
+        .to_dict()
+    )
+    for sym in symbols:
+        sector_by_symbol.setdefault(sym, "Unknown")
 
-        # Portfolio sectors.
-        alias_map = _load_alias_map(alias_path)
-        sector_by_symbol, sector_debug = _resolve_sector_by_symbol_with_debug(
-            bbg,
-            symbols,
-            alias_map=alias_map,
-        )
+    panel = _portfolio_security_panel(
+        positions_df,
+        prices_df,
+        nav_df,
+        sector_by_symbol,
+        trading_dates=benchmark_dates,
+        split_events_df=trades_df[trades_df["txn_type"].isin(POSITION_ADDITION_TYPES)][["trade_date", "symbol"]].rename(columns={"trade_date": "date"}),
+    )
+    p_sec = _aggregate_portfolio_sector(panel, nav_df)
 
-        panel = _portfolio_security_panel(
-            positions_df,
-            prices_df,
-            nav_df,
-            sector_by_symbol,
-            trading_dates=benchmark_dates,
-        )
-        p_sec = _aggregate_portfolio_sector(panel, nav_df)
+    b_sec = bsec_cache.copy()
+    b_sec["date"] = pd.to_datetime(b_sec["date"]).dt.normalize()
+    b_sec = b_sec[b_sec["date"].between(date_min, date_max)].copy()
+    if b_sec.empty:
+        raise RuntimeError("Benchmark sector-model cache is empty for the requested window. Refresh Bloomberg cache first.")
 
-        # Benchmark sector model from Bloomberg S&P 600 sector indices (returns + cap weights).
-        b_sec = _compute_benchmark_sector_model_from_sector_indices(
-            bbg,
-            cfg.benchmark,
-            fetch_start,
-            date_max,
-            benchmark_dates,
-        )
-
-    _safe_to_csv(sector_debug, out_dir / "sector_resolution_debug.csv")
+    emit(65, "Building active return decomposition")
 
     # Build portfolio return on benchmark trading calendar to avoid holiday mismatches.
     nav_ts = nav_df.copy()
@@ -855,12 +1040,14 @@ def run_attribution_poc(
     )
     sec_sel["r_b_s"] = sec_sel["r_b_s"].fillna(0.0)
     sec_sel["selection_effect"] = sec_sel["w_prev"] * (sec_sel["sec_ret"] - sec_sel["r_b_s"])
+    emit(80, "Aggregating sector and security effects")
     security_totals = (
         sec_sel.groupby(["symbol", "sector"], as_index=False)["selection_effect"]
         .sum()
         .sort_values("selection_effect", ascending=False)
     )
 
+    emit(90, "Writing outputs and charts")
     daily_path = out_dir / "attribution_daily.csv"
     summary_path = out_dir / "attribution_summary.csv"
     sector_path = out_dir / "attribution_by_sector.csv"
@@ -902,6 +1089,7 @@ def run_attribution_poc(
     print("Summary:")
     for _, r in summary.iterrows():
         print(f"  {r['metric']}: {r['value']:.4%}")
+    emit(100, "Attribution complete")
 
 
 def run_attribution_for_window(
@@ -909,6 +1097,7 @@ def run_attribution_for_window(
     start_date: pd.Timestamp | None = None,
     end_date: pd.Timestamp | None = None,
     lookback_days: int | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
 ) -> None:
     """
     Run attribution with an optional explicit date window.
@@ -918,6 +1107,8 @@ def run_attribution_for_window(
     if not transactions_path.exists():
         raise FileNotFoundError(f"Transactions file not found: {transactions_path}")
 
+    if progress_callback is not None:
+        progress_callback(2, "Validating date window")
     trades_df, cashflows_df = load_transactions(str(transactions_path))
     if trades_df.empty and cashflows_df.empty:
         raise RuntimeError("No transactions loaded.")
@@ -931,15 +1122,13 @@ def run_attribution_for_window(
     if s is not None and e is not None and s > e:
         raise ValueError(f"start_date must be <= end_date (got {s.date()} > {e.date()})")
 
-    # Determine benchmark latest date so windows remain market-aligned.
-    cfg = BloombergConfig()
-    with BloombergClient(cfg) as bbg:
-        probe = bbg.get_historical_px_last(
-            {cfg.benchmark: cfg.benchmark},
-            raw_max - pd.Timedelta(days=14),
-            pd.Timestamp.today().normalize(),
-        )
-    bench_max = pd.to_datetime(probe["date"]).max().normalize() if not probe.empty else raw_max
+    if progress_callback is not None:
+        progress_callback(12, "Resolving date limits")
+    bench_max = raw_max
+    paths = _cache_paths(repo)
+    bench_cache = _load_cache_csv(paths["benchmark"])
+    if not bench_cache.empty and "date" in bench_cache.columns:
+        bench_max = max(bench_max, pd.to_datetime(bench_cache["date"]).max().normalize())
 
     date_min = raw_min
     date_max = max(raw_max, bench_max)
@@ -948,7 +1137,7 @@ def run_attribution_for_window(
     if s is not None:
         date_min = max(raw_min, s)
     if e is not None:
-        date_max = min(date_max, e, bench_max)
+        date_max = min(date_max, e)
 
     if date_min > date_max:
         raise ValueError(
@@ -957,7 +1146,13 @@ def run_attribution_for_window(
 
     # Delegate by temporarily constraining lookback behavior through explicit dates.
     # We run the same pipeline, but with a pre-trimmed view using date_min/date_max.
-    run_attribution_poc(repo, lookback_days=None, start_date=date_min, end_date=date_max)
+    run_attribution_poc(
+        repo,
+        lookback_days=None,
+        start_date=date_min,
+        end_date=date_max,
+        progress_callback=progress_callback,
+    )
 
 
 def _parse_args() -> argparse.Namespace:
