@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 import math
 import sys
@@ -105,9 +106,21 @@ def _last_on_or_before(series: pd.Series, target: pd.Timestamp) -> float | None:
     return float(v)
 
 
+def _first_on_or_after(series: pd.Series, target: pd.Timestamp) -> float | None:
+    if series.empty:
+        return None
+    sub = series[series.index >= target]
+    if sub.empty:
+        return None
+    v = sub.iloc[0]
+    if pd.isna(v):
+        return None
+    return float(v)
+
+
 @st.cache_data(show_spinner=False, ttl=20)
 def _fetch_live_yf_quotes(symbols: tuple[str, ...], alias_csv: Optional[str]) -> pd.DataFrame:
-    cols = ["ticker", "today_price", "ret_1d", "ret_1w", "ret_1m"]
+    cols = ["ticker", "today_price", "ret_1d", "ret_1w", "ret_1m", "ret_ytd"]
     if yf is None or not symbols:
         return pd.DataFrame(columns=cols)
 
@@ -172,6 +185,7 @@ def _fetch_live_yf_quotes(symbols: tuple[str, ...], alias_csv: Optional[str]) ->
     d_1 = now - pd.Timedelta(days=1)
     d_7 = now - pd.Timedelta(days=7)
     d_30 = now - pd.Timedelta(days=30)
+    ytd_start = pd.Timestamp(year=now.year, month=1, day=1)
 
     for ticker, yf_ticker in ticker_to_yf.items():
         ds = _extract_series(daily, yf_ticker, "Close")
@@ -180,6 +194,7 @@ def _fetch_live_yf_quotes(symbols: tuple[str, ...], alias_csv: Optional[str]) ->
         prev_1d = _last_on_or_before(ds, d_1)
         prev_1w = _last_on_or_before(ds, d_7)
         prev_1m = _last_on_or_before(ds, d_30)
+        prev_ytd = _first_on_or_after(ds, ytd_start)
 
         def _ret(curr: float | None, prev: float | None) -> float | None:
             if curr is None or prev is None or prev == 0:
@@ -193,6 +208,7 @@ def _fetch_live_yf_quotes(symbols: tuple[str, ...], alias_csv: Optional[str]) ->
                 "ret_1d": _ret(today_price, prev_1d),
                 "ret_1w": _ret(today_price, prev_1w),
                 "ret_1m": _ret(today_price, prev_1m),
+                "ret_ytd": _ret(today_price, prev_ytd),
             }
         )
 
@@ -677,7 +693,7 @@ def _normalize_earnings_session(raw: object) -> str:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def _compute_upcoming_earnings(repo: str, as_of_date: str, tickers: tuple[str, ...]) -> pd.DataFrame:
-    cols = ["ticker", "company", "report_date", "days_until", "session", "time_note"]
+    cols = ["ticker", "company", "report_date", "days_until"]
     if not tickers:
         return pd.DataFrame(columns=cols)
     as_of = pd.to_datetime(as_of_date).normalize()
@@ -689,11 +705,8 @@ def _compute_upcoming_earnings(repo: str, as_of_date: str, tickers: tuple[str, .
     fields = [
         "NAME",
         "EXPECTED_REPORT_DT",
-        "EARNINGS_ANNOUNCEMENT_DT",
         "ANNOUNCEMENT_DT",
         "LATEST_ANNOUNCEMENT_DT",
-        "EARNINGS_ANNOUNCEMENT_TIME",
-        "ANNOUNCEMENT_TIME",
     ]
     rows: list[dict] = []
     try:
@@ -721,7 +734,6 @@ def _compute_upcoming_earnings(repo: str, as_of_date: str, tickers: tuple[str, .
                 d_raw = _first_non_blank(
                     [
                         chosen.get("EXPECTED_REPORT_DT"),
-                        chosen.get("EARNINGS_ANNOUNCEMENT_DT"),
                         chosen.get("ANNOUNCEMENT_DT"),
                         chosen.get("LATEST_ANNOUNCEMENT_DT"),
                     ]
@@ -734,20 +746,12 @@ def _compute_upcoming_earnings(repo: str, as_of_date: str, tickers: tuple[str, .
                 d = pd.to_datetime(d).normalize()
                 if d < as_of:
                     continue
-                time_raw = _first_non_blank(
-                    [
-                        chosen.get("EARNINGS_ANNOUNCEMENT_TIME"),
-                        chosen.get("ANNOUNCEMENT_TIME"),
-                    ]
-                )
                 rows.append(
                     {
                         "ticker": t,
                         "company": str(chosen.get("NAME", t)),
                         "report_date": d,
                         "days_until": int((d - as_of).days),
-                        "session": _normalize_earnings_session(time_raw),
-                        "time_note": str(time_raw) if time_raw is not None else "",
                     }
                 )
     except Exception:
@@ -755,8 +759,57 @@ def _compute_upcoming_earnings(repo: str, as_of_date: str, tickers: tuple[str, .
 
     if not rows:
         return pd.DataFrame(columns=cols)
-    out = pd.DataFrame(rows).sort_values(["report_date", "ticker"]).reset_index(drop=True)
+    out = pd.DataFrame(rows).drop_duplicates(subset=["ticker", "report_date"], keep="first")
+    out = out.sort_values(["report_date", "ticker"]).reset_index(drop=True)
     return out[cols]
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _get_benchmark_1d_return(repo: str, as_of_date: str) -> tuple[str, float | None]:
+    as_of = pd.to_datetime(as_of_date).normalize()
+    try:
+        with BloombergClient(BloombergConfig()) as bbg:
+            px = bbg.get_historical_field({"SML": "SML Index"}, "PX_LAST", as_of - pd.Timedelta(days=14), as_of)
+        if not px.empty:
+            px["date"] = pd.to_datetime(px["date"]).dt.normalize()
+            px = px.sort_values("date")
+            px = px[(px["date"] <= as_of) & (px["value"].notna())]
+            if len(px) >= 2:
+                p1 = float(px["value"].iloc[-1])
+                p0 = float(px["value"].iloc[-2])
+                if p0 != 0:
+                    return "SML 1D Return", (p1 / p0) - 1.0
+    except Exception:
+        pass
+
+    # Offline/non-Bloomberg fallback: yfinance IJR (S&P SmallCap 600 ETF proxy).
+    try:
+        q = _fetch_live_yf_quotes(("IJR",), None)
+        if not q.empty and "ret_1d" in q.columns:
+            v = pd.to_numeric(q["ret_1d"], errors="coerce").dropna()
+            if not v.empty:
+                return "IJR 1D Return", float(v.iloc[-1])
+    except Exception:
+        pass
+
+    try:
+        bench_path = Path(repo) / "outputs" / "cache" / "benchmark_px.csv"
+        if bench_path.exists():
+            b = pd.read_csv(bench_path)
+            b["date"] = pd.to_datetime(b.get("date"), errors="coerce").dt.normalize()
+            b = b[b["date"] <= as_of].sort_values("date")
+            if "benchmark_return" in b.columns:
+                s = pd.to_numeric(b["benchmark_return"], errors="coerce").dropna()
+                if not s.empty:
+                    return "SML 1D Return", float(s.iloc[-1])
+            if "tri" in b.columns:
+                tri = pd.to_numeric(b["tri"], errors="coerce")
+                ret = tri.pct_change().dropna()
+                if not ret.empty:
+                    return "SML 1D Return", float(ret.iloc[-1])
+    except Exception:
+        pass
+    return "Benchmark 1D Return", None
 
 
 def _xirr(cashflows: list[tuple[pd.Timestamp, float]]) -> float | None:
@@ -800,6 +853,31 @@ def _xirr(cashflows: list[tuple[pd.Timestamp, float]]) -> float | None:
     return r if math.isfinite(r) else None
 
 
+def _compute_symbol_irr(sym_trades: pd.DataFrame, as_of: pd.Timestamp, terminal_value: float) -> float | None:
+    if sym_trades.empty:
+        return None
+    cycle_start = _most_recent_open_cycle_start(sym_trades)
+    if cycle_start is None:
+        return None
+    cycle = sym_trades[sym_trades["trade_date"] >= cycle_start].sort_values("trade_date")
+    if cycle.empty:
+        return None
+    holding_days = int((as_of - pd.to_datetime(cycle_start).normalize()).days)
+    if holding_days < 365:
+        return None
+
+    cfs: list[tuple[pd.Timestamp, float]] = []
+    for _, r in cycle.iterrows():
+        amt = float(r.get("amount", 0) or 0)
+        txn = str(r.get("txn_type", ""))
+        if txn in POSITION_ADD_TYPES:
+            cfs.append((pd.to_datetime(r["trade_date"]).normalize(), -abs(amt)))
+        else:
+            cfs.append((pd.to_datetime(r["trade_date"]).normalize(), abs(amt)))
+    cfs.append((as_of, float(terminal_value)))
+    return _xirr(cfs)
+
+
 def _return_cell_color(v: object) -> str:
     try:
         x = float(v)
@@ -837,6 +915,7 @@ def _render_live_holdings_fragment(repo: str, as_of_date: str) -> None:
             "ret_1d",
             "ret_1w",
             "ret_1m",
+            "ret_ytd",
             "market_value",
             "weight",
             "avg_price",
@@ -847,7 +926,7 @@ def _render_live_holdings_fragment(repo: str, as_of_date: str) -> None:
         ]
     ].copy()
     h_view["first_buy_date"] = pd.to_datetime(h_view["first_buy_date"], errors="coerce")
-    for col in ["ret_1d", "ret_1w", "ret_1m", "weight", "pnl_pct", "irr"]:
+    for col in ["ret_1d", "ret_1w", "ret_1m", "ret_ytd", "weight", "pnl_pct", "irr"]:
         h_view[col] = h_view[col] * 100.0
 
     h_display = h_view.rename(
@@ -858,6 +937,7 @@ def _render_live_holdings_fragment(repo: str, as_of_date: str) -> None:
             "ret_1d": "1D",
             "ret_1w": "1W",
             "ret_1m": "1M",
+            "ret_ytd": "YTD",
             "market_value": "Market Value",
             "weight": "Weight",
             "avg_price": "Average Price",
@@ -880,10 +960,11 @@ def _render_live_holdings_fragment(repo: str, as_of_date: str) -> None:
             "1D": pd.to_numeric(r["1D"], errors="coerce"),
             "1W": pd.to_numeric(r["1W"], errors="coerce"),
             "1M": pd.to_numeric(r["1M"], errors="coerce"),
+            "YTD": pd.to_numeric(r["YTD"], errors="coerce"),
         }
         p = prev.get(t)
         if isinstance(p, dict):
-            for c in ["Today Price", "1D", "1W", "1M"]:
+            for c in ["Today Price", "1D", "1W", "1M", "YTD"]:
                 old_v = p.get(c)
                 new_v = current[t][c]
                 if pd.notna(old_v) and pd.notna(new_v) and abs(float(new_v) - float(old_v)) > 1e-9:
@@ -897,6 +978,7 @@ def _render_live_holdings_fragment(repo: str, as_of_date: str) -> None:
                 "1D": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
                 "1W": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
                 "1M": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
+                "YTD": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
                 "Market Value": lambda x: f"${x:,.0f}" if pd.notna(x) else "NA",
                 "Weight": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
                 "Average Price": lambda x: f"${x:,.2f}" if pd.notna(x) else "NA",
@@ -906,7 +988,7 @@ def _render_live_holdings_fragment(repo: str, as_of_date: str) -> None:
                 "IRR": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
             }
         )
-        .map(_return_cell_color, subset=["1D", "1W", "1M"])
+        .map(_return_cell_color, subset=["1D", "1W", "1M", "YTD"])
         .apply(lambda df: _live_flash_styles(df, changed_cells), axis=None)
     )
     st.dataframe(h_styled, use_container_width=True, hide_index=True)
@@ -921,6 +1003,19 @@ def _render_live_holdings_fragment(repo: str, as_of_date: str) -> None:
     tc2.metric("Total Cost Basis", f"${float(holdings_totals.get('cost_basis') or 0.0):,.0f}")
     tc3.metric("Total PnL ($)", f"${float(holdings_totals.get('pnl_dollar') or 0.0):,.0f}")
     tc4.metric("Total PnL (%)", f"{float(total_pnl_pct) * 100.0:,.2f}%" if total_pnl_pct is not None else "N/A")
+
+    port_1d = None
+    try:
+        numer = (holdings["market_value"].fillna(0.0) * holdings["ret_1d"].fillna(0.0)).sum()
+        denom = holdings["market_value"].fillna(0.0).sum()
+        if denom != 0:
+            port_1d = float(numer / denom)
+    except Exception:
+        port_1d = None
+    bench_label, bench_1d = _get_benchmark_1d_return(repo, as_of_date)
+    r1, r2 = st.columns(2)
+    r1.metric("Portfolio 1D Return", f"{port_1d * 100.0:,.2f}%" if port_1d is not None else "N/A")
+    r2.metric(bench_label, f"{bench_1d * 100.0:,.2f}%" if bench_1d is not None else "N/A")
 
 
 def _most_recent_open_cycle_start(sym_trades: pd.DataFrame) -> pd.Timestamp | None:
@@ -951,14 +1046,14 @@ def _compute_live_holdings_base(repo: str, as_of_date: str) -> tuple[pd.DataFram
     as_of = pd.to_datetime(as_of_date).normalize()
     trades_df, cashflows_df = load_transactions(str(repo_path / "Transactions.csv"))
     if trades_df.empty:
-        empty = pd.DataFrame(columns=["ticker", "company", "shares", "avg_price", "today_price", "ret_1d", "ret_1w", "ret_1m", "market_value", "cost_basis", "weight", "pnl_dollar", "pnl_pct", "irr"])
+        empty = pd.DataFrame(columns=["ticker", "company", "shares", "avg_price", "today_price", "ret_1d", "ret_1w", "ret_1m", "ret_ytd", "market_value", "cost_basis", "weight", "pnl_dollar", "pnl_pct", "irr"])
         return empty, {"market_value": 0.0, "cost_basis": 0.0, "pnl_dollar": 0.0, "pnl_pct": None}
 
     trades = trades_df.copy()
     trades["trade_date"] = pd.to_datetime(trades["trade_date"]).dt.normalize()
     trades = trades[trades["trade_date"] <= as_of].copy()
     if trades.empty:
-        empty = pd.DataFrame(columns=["ticker", "company", "shares", "avg_price", "today_price", "ret_1d", "ret_1w", "ret_1m", "market_value", "cost_basis", "weight", "pnl_dollar", "pnl_pct", "irr"])
+        empty = pd.DataFrame(columns=["ticker", "company", "shares", "avg_price", "today_price", "ret_1d", "ret_1w", "ret_1m", "ret_ytd", "market_value", "cost_basis", "weight", "pnl_dollar", "pnl_pct", "irr"])
         return empty, {"market_value": 0.0, "cost_basis": 0.0, "pnl_dollar": 0.0, "pnl_pct": None}
 
     # Current shares by symbol.
@@ -1033,6 +1128,9 @@ def _compute_live_holdings_base(repo: str, as_of_date: str) -> tuple[pd.DataFram
             p1d = _price_asof(g, as_of - pd.Timedelta(days=1))
             p1w = _price_asof(g, as_of - pd.Timedelta(days=7))
             p1m = _price_asof(g, as_of - pd.Timedelta(days=30))
+            ytd_start = pd.Timestamp(year=as_of.year, month=1, day=1)
+            g_ytd = g[g["date"] >= ytd_start]
+            p_ytd = float(g_ytd["price"].iloc[0]) if not g_ytd.empty else None
 
             def _ret(curr: float | None, prev: float | None) -> float | None:
                 if curr is None or prev is None or prev == 0:
@@ -1045,12 +1143,13 @@ def _compute_live_holdings_base(repo: str, as_of_date: str) -> tuple[pd.DataFram
                     "ret_1d": _ret(p0, p1d),
                     "ret_1w": _ret(p0, p1w),
                     "ret_1m": _ret(p0, p1m),
+                    "ret_ytd": _ret(p0, p_ytd),
                 }
             )
-        ret_df = pd.DataFrame(ret_rows) if ret_rows else pd.DataFrame(columns=["ticker", "ret_1d", "ret_1w", "ret_1m"])
+        ret_df = pd.DataFrame(ret_rows) if ret_rows else pd.DataFrame(columns=["ticker", "ret_1d", "ret_1w", "ret_1m", "ret_ytd"])
     else:
         px = pd.DataFrame(columns=["ticker", "today_price"])
-        ret_df = pd.DataFrame(columns=["ticker", "ret_1d", "ret_1w", "ret_1m"])
+        ret_df = pd.DataFrame(columns=["ticker", "ret_1d", "ret_1w", "ret_1m", "ret_ytd"])
 
     # Company names from Bloomberg.
     alias_map = _load_alias_map(alias_path)
@@ -1084,28 +1183,9 @@ def _compute_live_holdings_base(repo: str, as_of_date: str) -> tuple[pd.DataFram
     # IRR by symbol from most recent open cycle only.
     if tickers:
         for t in tickers:
-            first_buy = out.loc[out["ticker"] == t, "first_buy_date"].iloc[0] if (out["ticker"] == t).any() else pd.NaT
-            if pd.isna(first_buy):
-                continue
-            holding_days = int((as_of - pd.to_datetime(first_buy).normalize()).days)
-            if holding_days < 365:
-                continue
             sym_trades = trades[trades["symbol"] == t].copy()
-            cycle_start = _most_recent_open_cycle_start(sym_trades)
-            if cycle_start is None:
-                continue
-            cycle = sym_trades[sym_trades["trade_date"] >= cycle_start].sort_values("trade_date")
-            cfs: list[tuple[pd.Timestamp, float]] = []
-            for _, r in cycle.iterrows():
-                amt = float(r.get("amount", 0) or 0)
-                txn = str(r.get("txn_type", ""))
-                if txn in POSITION_ADD_TYPES:
-                    cfs.append((pd.to_datetime(r["trade_date"]).normalize(), -abs(amt)))
-                else:
-                    cfs.append((pd.to_datetime(r["trade_date"]).normalize(), abs(amt)))
             mv = float(out.loc[out["ticker"] == t, "market_value"].iloc[0]) if (out["ticker"] == t).any() else 0.0
-            cfs.append((as_of, mv))
-            irr = _xirr(cfs)
+            irr = _compute_symbol_irr(sym_trades, as_of, mv)
             if irr is not None:
                 out.loc[out["ticker"] == t, "irr"] = irr
 
@@ -1124,6 +1204,7 @@ def _compute_live_holdings_base(repo: str, as_of_date: str) -> tuple[pd.DataFram
                 "ret_1d": pd.NA,
                 "ret_1w": pd.NA,
                 "ret_1m": pd.NA,
+                "ret_ytd": pd.NA,
                 "first_buy_date": pd.NaT,
                 "market_value": cash_val,
                 "cost_basis": cash_val,
@@ -1146,7 +1227,7 @@ def _compute_live_holdings_base(repo: str, as_of_date: str) -> tuple[pd.DataFram
     }
     if totals["cost_basis"] != 0:
         totals["pnl_pct"] = totals["pnl_dollar"] / totals["cost_basis"]
-    return out[["ticker", "company", "shares", "first_buy_date", "avg_price", "today_price", "ret_1d", "ret_1w", "ret_1m", "market_value", "cost_basis", "weight", "pnl_dollar", "pnl_pct", "irr"]], totals
+    return out[["ticker", "company", "shares", "first_buy_date", "avg_price", "today_price", "ret_1d", "ret_1w", "ret_1m", "ret_ytd", "market_value", "cost_basis", "weight", "pnl_dollar", "pnl_pct", "irr"]], totals
 
 
 def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, dict[str, float | None], int]:
@@ -1154,6 +1235,7 @@ def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, di
     if out.empty:
         return out, totals, 0
 
+    as_of = pd.to_datetime(as_of_date).normalize()
     repo_path = Path(repo)
     inputs_dir = repo_path / "inputs"
     alias_path = inputs_dir / "symbol_aliases.csv" if inputs_dir.exists() else None
@@ -1180,6 +1262,7 @@ def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, di
                 "ret_1d": "ret_1d_live",
                 "ret_1w": "ret_1w_live",
                 "ret_1m": "ret_1m_live",
+                "ret_ytd": "ret_ytd_live",
             }
         ),
         on="ticker",
@@ -1189,7 +1272,8 @@ def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, di
     out["ret_1d"] = out["ret_1d_live"].where(out["ret_1d_live"].notna(), out["ret_1d"])
     out["ret_1w"] = out["ret_1w_live"].where(out["ret_1w_live"].notna(), out["ret_1w"])
     out["ret_1m"] = out["ret_1m_live"].where(out["ret_1m_live"].notna(), out["ret_1m"])
-    out = out.drop(columns=["today_price_live", "ret_1d_live", "ret_1w_live", "ret_1m_live"], errors="ignore")
+    out["ret_ytd"] = out["ret_ytd_live"].where(out["ret_ytd_live"].notna(), out.get("ret_ytd"))
+    out = out.drop(columns=["today_price_live", "ret_1d_live", "ret_1w_live", "ret_1m_live", "ret_ytd_live"], errors="ignore")
 
     # Recompute valuation metrics from live prices.
     out["market_value"] = out["shares"] * out["today_price"].fillna(0.0)
@@ -1199,6 +1283,16 @@ def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, di
     total_mv = float(out["market_value"].sum())
     out["weight"] = out["market_value"] / total_mv if total_mv != 0 else 0.0
     out = out.sort_values("market_value", ascending=False)
+
+    # Recompute IRR after live price overlay so IRR and PnL use the same terminal value.
+    trades_df, _ = load_transactions(str(repo_path / "Transactions.csv"))
+    trades_df["trade_date"] = pd.to_datetime(trades_df["trade_date"]).dt.normalize()
+    trades_df = trades_df[trades_df["trade_date"] <= as_of].copy()
+    for t in live_universe:
+        sym_trades = trades_df[trades_df["symbol"] == t].copy()
+        mv = float(out.loc[out["ticker"] == t, "market_value"].iloc[0]) if (out["ticker"] == t).any() else 0.0
+        irr = _compute_symbol_irr(sym_trades, as_of, mv)
+        out.loc[out["ticker"] == t, "irr"] = irr if irr is not None else pd.NA
 
     totals = {
         "market_value": float(out["market_value"].sum()),
@@ -1366,21 +1460,61 @@ def main() -> None:
         .ima-subheader {
             color: #E84A27;
             font-weight: 600;
-            margin-top: -10px;
-            margin-bottom: 20px;
+            margin-top: -6px;
+            margin-bottom: 8px;
+        }
+        .block-container {
+            padding-top: 1.35rem;
         }
         .stTabs [data-baseweb="tab-list"] {
             justify-content: flex-end;
             gap: 0.5rem;
         }
+        .ima-title-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-top: 6px;
+        }
+        .ima-inline-logo {
+            width: 70px;
+            height: auto;
+            margin-top: 14px;
+            margin-left: -14px;
+            pointer-events: none;
+        }
+        .stDataFrame [data-testid="stDataFrameToolbar"] {
+            display: none !important;
+        }
+        .stDataFrame button[aria-label*="column menu"] {
+            display: none !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
-    
-    st.markdown('<h1 class="ima-header">Portfolio Tool</h1>', unsafe_allow_html=True)
+
+    logo_path = repo / "logo.png"
+    if logo_path.exists():
+        logo_b64 = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+        st.markdown(
+            (
+                '<div class="ima-title-row">'
+                '<h1 class="ima-header">IMA Terminal</h1>'
+                f'<img class="ima-inline-logo" src="data:image/png;base64,{logo_b64}" alt="IMA logo" />'
+                '</div>'
+            ),
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown('<h1 class="ima-header">IMA Terminal</h1>', unsafe_allow_html=True)
     st.markdown('<h3 class="ima-subheader">UIUC Investment Management Academy</h3>', unsafe_allow_html=True)
-    st.caption("Bloomberg-backed portfolio analytics and attribution with adjustable date windows.")
+    st.markdown(
+        "- Live/intraday holdings monitor with auto-refresh\n"
+        "- Upcoming earnings calendar for current positions\n"
+        "- Historical performance vs benchmark\n"
+        "- Brinson-style attribution and security decomposition"
+    )
     bbg_ok, bbg_msg = _check_bloomberg_status()
     if bbg_ok:
         st.success(bbg_msg)
@@ -1443,7 +1577,7 @@ def main() -> None:
         if holdings is not None and not holdings.empty:
             _render_live_holdings_fragment(str(repo), str(holdings_as_of))
 
-            st.subheader("Upcoming Earnings")
+            st.subheader("Upcoming Events")
             earnings_tickers = tuple(
                 sorted(
                     holdings.loc[
@@ -1461,7 +1595,7 @@ def main() -> None:
                 if bbg_ok:
                     st.caption("No upcoming earnings found for current holdings.")
                 else:
-                    st.caption("Upcoming earnings requires Bloomberg connectivity in this runtime.")
+                    st.caption("Upcoming earnings require Bloomberg connectivity in this runtime.")
             else:
                 st.dataframe(
                     earnings,
@@ -1472,8 +1606,6 @@ def main() -> None:
                         "company": "Company",
                         "report_date": st.column_config.DateColumn("Earnings Date"),
                         "days_until": st.column_config.NumberColumn("Days Until", format="%d"),
-                        "session": "Session",
-                        "time_note": "Time Detail",
                     },
                 )
 
@@ -1584,12 +1716,25 @@ def main() -> None:
 
         if summary is not None:
             st.subheader("Summary")
-            summary_scaled = _scaled_percent_like(summary, unit, skip_cols={"metric"})
+            summary_scaled = summary.copy()
+            summary_scaled["metric"] = (
+                summary_scaled["metric"]
+                .astype(str)
+                .str.replace("_", " ", regex=False)
+                .str.strip()
+                .str.title()
+            )
+            if "value" in summary_scaled.columns:
+                scale = 100.0 if unit == "%" else 10000.0
+                summary_scaled["value"] = pd.to_numeric(summary_scaled["value"], errors="coerce") * scale
             st.dataframe(
                 summary_scaled,
                 use_container_width=True,
                 hide_index=True,
-                column_config=_effect_number_config(summary_scaled, unit, skip_cols={"metric"}),
+                column_config={
+                    "metric": st.column_config.TextColumn("Metric"),
+                    "value": st.column_config.NumberColumn("Value", format=_percent_unit_format(unit)),
+                },
             )
 
         if sector is not None:
@@ -1608,21 +1753,19 @@ def main() -> None:
                 if unknown_symbols:
                     st.caption(f"Unknown sector currently contains: {', '.join(unknown_symbols)}")
             sv["status"] = sv["total_effect"].map(lambda x: "Outperforming" if x > 0 else "Underperforming")
-            sv["dominant_driver"] = sv.apply(
-                lambda r: "Security Selection" if abs(r["select_effect"]) >= abs(r["alloc_effect"]) else "Asset Allocation",
-                axis=1,
-            )
             sv = sv.sort_values("total_effect", ascending=False)
-            sv_view = sv[["sector", "status", "dominant_driver", "alloc_effect", "select_effect", "total_effect"]]
-            sv_scaled = _scaled_percent_like(sv_view, unit, skip_cols={"sector", "status", "dominant_driver"})
+            sv_view = sv[["sector", "status", "alloc_effect", "select_effect", "total_effect"]]
+            sv_scaled = _scaled_percent_like(sv_view, unit, skip_cols={"sector", "status"})
             st.dataframe(
                 sv_scaled,
                 use_container_width=True,
                 hide_index=True,
-                column_config=_effect_number_config(sv_scaled, unit, skip_cols={"sector", "status", "dominant_driver"}),
+                column_config=_effect_number_config(
+                    sv_scaled,
+                    unit,
+                    skip_cols={"sector", "status"},
+                ),
             )
-            chart_df = sv.set_index("sector")[["alloc_effect", "select_effect", "total_effect"]]
-            st.bar_chart(chart_df)
             if sec_decomp is not None and not sec_decomp.empty:
                 st.caption("Selection effect by sector (expand to view constituents).")
                 sec_group = (
