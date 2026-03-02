@@ -22,9 +22,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-import blpapi
 import matplotlib.pyplot as plt
 import pandas as pd
+
+try:
+    import blpapi  # type: ignore
+except Exception:  # pragma: no cover - optional dependency in cloud/offline mode
+    blpapi = None
 
 from src.portfolio.cash import build_cash_ledger
 from src.portfolio.load_transactions import load_transactions
@@ -75,6 +79,129 @@ def _safe_savefig(fig, path: Path, dpi: int = 140) -> Path:
         return alt
 
 
+def _load_alias_map(path: Path | None) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+    if "symbol" not in df.columns:
+        return {}
+    ticker_col = "bloomberg_ticker" if "bloomberg_ticker" in df.columns else None
+    if ticker_col is None and "yfinance_ticker" in df.columns:
+        ticker_col = "yfinance_ticker"
+    if ticker_col is None:
+        return {}
+    return df.set_index("symbol")[ticker_col].astype(str).to_dict()
+
+
+def _bbg_security_candidates(symbol: str, alias_map: dict[str, str] | None = None) -> list[str]:
+    alias_map = alias_map or {}
+    sym = str(symbol).strip()
+    out: list[str] = []
+    aliased = alias_map.get(sym)
+    if aliased:
+        out.append(str(aliased).strip())
+    out.append(f"{sym} US Equity")
+    parts = sym.split()
+    if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
+        out.append(f"{parts[0]}/{parts[1]} US Equity")
+    if "." in sym:
+        out.append(f"{sym.replace('.', '/')} US Equity")
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for sec in out:
+        if sec and sec not in seen:
+            seen.add(sec)
+            uniq.append(sec)
+    return uniq
+
+
+def _resolve_bbg_field_by_symbol(
+    bbg: "BloombergClient",
+    symbols: list[str],
+    field: str,
+    alias_map: dict[str, str] | None = None,
+) -> dict[str, str]:
+    alias_map = alias_map or {}
+    symbol_to_candidates = {s: _bbg_security_candidates(s, alias_map) for s in symbols}
+    securities: list[str] = []
+    for cands in symbol_to_candidates.values():
+        for sec in cands:
+            if sec not in securities:
+                securities.append(sec)
+    ref = bbg.get_reference(securities, [field]) if securities else {}
+    out: dict[str, str] = {}
+    for s in symbols:
+        val = "Unknown"
+        for sec in symbol_to_candidates.get(s, []):
+            raw = ref.get(sec, {}).get(field)
+            txt = str(raw).strip() if raw is not None else ""
+            if txt and txt.lower() not in {"nan", "none"}:
+                val = txt
+                break
+        out[s] = val
+    return out
+
+
+def _resolve_sector_by_symbol_with_debug(
+    bbg: "BloombergClient",
+    symbols: list[str],
+    alias_map: dict[str, str] | None = None,
+) -> tuple[dict[str, str], pd.DataFrame]:
+    alias_map = alias_map or {}
+    debug_rows: list[dict] = []
+    out: dict[str, str] = {}
+    for sym in symbols:
+        cands = _bbg_security_candidates(sym, alias_map)
+        ref = bbg.get_reference(cands, ["NAME", "GICS_SECTOR_NAME", "INDUSTRY_SECTOR", "ID_BB_GLOBAL"])
+        chosen_sector = "Unknown"
+        chosen_sec = ""
+        chosen_field = ""
+        for sec in cands:
+            rec = ref.get(sec, {})
+            gics = str(rec.get("GICS_SECTOR_NAME", "")).strip()
+            ind = str(rec.get("INDUSTRY_SECTOR", "")).strip()
+            name = str(rec.get("NAME", "")).strip()
+            bbid = str(rec.get("ID_BB_GLOBAL", "")).strip()
+            debug_rows.append(
+                {
+                    "symbol": sym,
+                    "candidate_security": sec,
+                    "name": name,
+                    "gics_sector_name": gics,
+                    "industry_sector": ind,
+                    "id_bb_global": bbid,
+                    "candidate_returned": bool(rec),
+                }
+            )
+            if gics and gics.lower() not in {"nan", "none"}:
+                chosen_sector = gics
+                chosen_sec = sec
+                chosen_field = "GICS_SECTOR_NAME"
+                break
+            if ind and ind.lower() not in {"nan", "none"}:
+                chosen_sector = ind
+                chosen_sec = sec
+                chosen_field = "INDUSTRY_SECTOR"
+                break
+        out[sym] = chosen_sector
+        debug_rows.append(
+            {
+                "symbol": sym,
+                "candidate_security": "__chosen__",
+                "name": chosen_sec,
+                "gics_sector_name": chosen_sector,
+                "industry_sector": chosen_field,
+                "id_bb_global": "",
+                "candidate_returned": chosen_sector != "Unknown",
+            }
+        )
+    dbg = pd.DataFrame(debug_rows) if debug_rows else pd.DataFrame(
+        columns=["symbol", "candidate_security", "name", "gics_sector_name", "industry_sector", "id_bb_global", "candidate_returned"]
+    )
+    return out, dbg
+
+
 def _extend_positions_and_cash_to_date(
     positions_df: pd.DataFrame,
     cash_df: pd.DataFrame,
@@ -121,6 +248,8 @@ class BloombergClient:
         self._session: blpapi.Session | None = None
 
     def __enter__(self) -> "BloombergClient":
+        if blpapi is None:
+            raise RuntimeError("blpapi is not installed in this Python environment.")
         opts = blpapi.SessionOptions()
         opts.setServerHost(self.cfg.host)
         opts.setServerPort(self.cfg.port)
@@ -579,13 +708,12 @@ def run_attribution_poc(
         benchmark_dates = benchmark_dates[(benchmark_dates >= date_min) & (benchmark_dates <= date_max)]
 
         # Portfolio sectors.
-        # Map portfolio symbols to Bloomberg security notation used in price layer.
-        sec_map = {s: f"{s} US Equity" for s in symbols}
-        sector_ref = bbg.get_reference(list(sec_map.values()), ["GICS_SECTOR_NAME"])
-        sector_by_symbol = {
-            sym: str(sector_ref.get(sec, {}).get("GICS_SECTOR_NAME", "Unknown"))
-            for sym, sec in sec_map.items()
-        }
+        alias_map = _load_alias_map(alias_path)
+        sector_by_symbol, sector_debug = _resolve_sector_by_symbol_with_debug(
+            bbg,
+            symbols,
+            alias_map=alias_map,
+        )
 
         panel = _portfolio_security_panel(
             positions_df,
@@ -604,6 +732,8 @@ def run_attribution_poc(
             date_max,
             benchmark_dates,
         )
+
+    _safe_to_csv(sector_debug, out_dir / "sector_resolution_debug.csv")
 
     # Build portfolio return on benchmark trading calendar to avoid holiday mismatches.
     nav_ts = nav_df.copy()

@@ -7,8 +7,12 @@ When Bloomberg/manual still has gaps, uses last trade price fallback.
 from pathlib import Path
 from typing import Optional
 
-import blpapi
 import pandas as pd
+
+try:
+    import blpapi  # type: ignore
+except Exception:  # pragma: no cover - optional dependency in cloud/offline mode
+    blpapi = None
 
 
 def _load_symbol_aliases(path: Optional[Path]) -> dict[str, str]:
@@ -85,6 +89,8 @@ def _fetch_bloomberg_prices(
     Returns DataFrame(date, symbol, price). Symbols with no data are omitted.
     """
     if not symbol_to_security:
+        return pd.DataFrame(columns=["date", "symbol", "price"])
+    if blpapi is None:
         return pd.DataFrame(columns=["date", "symbol", "price"])
 
     session_options = blpapi.SessionOptions()
