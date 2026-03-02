@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import math
 import sys
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 
-from attribution_poc import run_attribution_for_window
-from src.portfolio.load_transactions import load_transactions
+from attribution_poc import run_attribution_for_window, refresh_bloomberg_cache
+from src.portfolio.load_transactions import load_transactions, POSITION_ADDITION_TYPES
 from src.portfolio.cash import build_cash_ledger
 from src.portfolio.positions import POSITION_ADD_TYPES, build_positions
 from src.portfolio.prices import get_latest_market_date, get_prices
@@ -168,7 +170,172 @@ def _outputs_last_updated(outputs_dir: Path) -> pd.Timestamp | None:
     if not existing:
         return None
     latest = max(p.stat().st_mtime for p in existing)
-    return pd.to_datetime(latest, unit="s")
+    dt_central = datetime.fromtimestamp(latest, tz=timezone.utc).astimezone(ZoneInfo("America/Chicago"))
+    return pd.Timestamp(dt_central)
+
+
+def _outputs_date_window(outputs_dir: Path) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    daily_path = outputs_dir / "attribution_daily.csv"
+    if not daily_path.exists():
+        return None, None
+    try:
+        df = pd.read_csv(daily_path, usecols=["date"])
+    except Exception:
+        return None, None
+    d = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if d.empty:
+        return None, None
+    return d.min().normalize(), d.max().normalize()
+
+
+def _portfolio_date_bounds(repo_path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
+    today = pd.Timestamp.today().normalize()
+    tx_path = repo_path / "Transactions.csv"
+    if not tx_path.exists():
+        return pd.Timestamp("2025-01-01"), today
+    try:
+        df = pd.read_csv(tx_path, usecols=["Date"])
+    except Exception:
+        try:
+            df = pd.read_csv(tx_path, usecols=["trade_date"])
+        except Exception:
+            return pd.Timestamp("2025-01-01"), today
+    col = "Date" if "Date" in df.columns else "trade_date"
+    d = pd.to_datetime(df[col], errors="coerce").dropna()
+    if d.empty:
+        return pd.Timestamp("2025-01-01"), today
+    inception = d.min().normalize()
+    return inception, today
+
+
+def _clamp_date_to_bounds(value: object, min_date: pd.Timestamp, max_date: pd.Timestamp, fallback: pd.Timestamp) -> pd.Timestamp:
+    try:
+        d = pd.to_datetime(value).normalize()
+    except Exception:
+        d = fallback
+    if d < min_date:
+        return min_date
+    if d > max_date:
+        return max_date
+    return d
+
+
+def _has_attribution_cache(repo_path: Path) -> bool:
+    cdir = repo_path / "outputs" / "cache"
+    required = [
+        cdir / "portfolio_prices.csv",
+        cdir / "benchmark_px.csv",
+        cdir / "benchmark_sector_model.csv",
+        cdir / "portfolio_sector_map.csv",
+    ]
+    return all(p.exists() for p in required)
+
+
+def _first_non_blank(values: list[object]) -> object | None:
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s and s.lower() not in {"nan", "none", "nat"}:
+            return v
+    return None
+
+
+def _normalize_earnings_session(raw: object) -> str:
+    s = str(raw or "").strip().lower()
+    if not s:
+        return ""
+    if any(k in s for k in ["before", "bmo", "pre", "open"]):
+        return "Pre-Market"
+    if any(k in s for k in ["after", "amc", "post", "close"]):
+        return "After-Market"
+    if "during" in s:
+        return "During Market"
+    return str(raw)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _compute_upcoming_earnings(repo: str, as_of_date: str, tickers: tuple[str, ...]) -> pd.DataFrame:
+    cols = ["ticker", "company", "report_date", "days_until", "session", "time_note"]
+    if not tickers:
+        return pd.DataFrame(columns=cols)
+    as_of = pd.to_datetime(as_of_date).normalize()
+    repo_path = Path(repo)
+    inputs_dir = repo_path / "inputs"
+    alias_path = inputs_dir / "symbol_aliases.csv" if inputs_dir.exists() else None
+    alias_map = _load_alias_map(alias_path)
+
+    fields = [
+        "NAME",
+        "EXPECTED_REPORT_DT",
+        "EARNINGS_ANNOUNCEMENT_DT",
+        "ANNOUNCEMENT_DT",
+        "LATEST_ANNOUNCEMENT_DT",
+        "EARNINGS_ANNOUNCEMENT_TIME",
+        "ANNOUNCEMENT_TIME",
+    ]
+    rows: list[dict] = []
+    try:
+        with BloombergClient(BloombergConfig()) as bbg:
+            for t in tickers:
+                cands = _bbg_security_candidates(t, alias_map)
+                ref = bbg.get_reference(cands, fields)
+                chosen: dict[str, object] = {}
+                for sec in cands:
+                    rec = ref.get(sec, {})
+                    if rec:
+                        chosen = rec
+                        date_probe = _first_non_blank(
+                            [
+                                rec.get("EXPECTED_REPORT_DT"),
+                                rec.get("EARNINGS_ANNOUNCEMENT_DT"),
+                                rec.get("ANNOUNCEMENT_DT"),
+                                rec.get("LATEST_ANNOUNCEMENT_DT"),
+                            ]
+                        )
+                        if date_probe is not None:
+                            break
+                if not chosen:
+                    continue
+                d_raw = _first_non_blank(
+                    [
+                        chosen.get("EXPECTED_REPORT_DT"),
+                        chosen.get("EARNINGS_ANNOUNCEMENT_DT"),
+                        chosen.get("ANNOUNCEMENT_DT"),
+                        chosen.get("LATEST_ANNOUNCEMENT_DT"),
+                    ]
+                )
+                if d_raw is None:
+                    continue
+                d = pd.to_datetime(d_raw, errors="coerce")
+                if pd.isna(d):
+                    continue
+                d = pd.to_datetime(d).normalize()
+                if d < as_of:
+                    continue
+                time_raw = _first_non_blank(
+                    [
+                        chosen.get("EARNINGS_ANNOUNCEMENT_TIME"),
+                        chosen.get("ANNOUNCEMENT_TIME"),
+                    ]
+                )
+                rows.append(
+                    {
+                        "ticker": t,
+                        "company": str(chosen.get("NAME", t)),
+                        "report_date": d,
+                        "days_until": int((d - as_of).days),
+                        "session": _normalize_earnings_session(time_raw),
+                        "time_note": str(time_raw) if time_raw is not None else "",
+                    }
+                )
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    out = pd.DataFrame(rows).sort_values(["report_date", "ticker"]).reset_index(drop=True)
+    return out[cols]
 
 
 def _xirr(cashflows: list[tuple[pd.Timestamp, float]]) -> float | None:
@@ -474,7 +641,19 @@ def _compute_security_decomp(repo: str, start_date: str, end_date: str) -> pd.Da
         trading_dates = trading_dates[(trading_dates >= start) & (trading_dates <= end)]
         alias_map = _load_alias_map(alias_path)
         sector_by_symbol = _resolve_sector_by_symbol(bbg, symbols, alias_map=alias_map)
-    panel = _portfolio_security_panel(positions_df, prices_df, nav_df, sector_by_symbol, trading_dates=trading_dates)
+    split_events = (
+        trades_df[trades_df["txn_type"].isin(POSITION_ADDITION_TYPES)][["trade_date", "symbol"]]
+        .rename(columns={"trade_date": "date"})
+        .copy()
+    )
+    panel = _portfolio_security_panel(
+        positions_df,
+        prices_df,
+        nav_df,
+        sector_by_symbol,
+        trading_dates=trading_dates,
+        split_events_df=split_events,
+    )
     if panel.empty:
         return security
 
@@ -539,37 +718,113 @@ def main() -> None:
         st.warning(bbg_msg)
         st.info("Offline mode: live Bloomberg pulls are disabled. Displaying saved outputs and local fallback data where available.")
 
+    inception_date, today_date = _portfolio_date_bounds(repo)
+    has_cache = _has_attribution_cache(repo)
+    saved_start, saved_end = _outputs_date_window(outputs)
+    default_start = max(pd.Timestamp("2025-01-01"), inception_date)
+    if saved_start is not None:
+        default_start = min(max(saved_start, inception_date), today_date)
+    default_end = today_date
+    if saved_end is not None:
+        default_end = min(max(saved_end, inception_date), today_date)
+    if default_start > default_end:
+        default_start = inception_date
+
+    start_key = "start_date_input"
+    end_key = "end_date_input"
+    if start_key not in st.session_state:
+        st.session_state[start_key] = default_start.date()
+    if end_key not in st.session_state:
+        st.session_state[end_key] = default_end.date()
+
+    st.session_state[start_key] = _clamp_date_to_bounds(
+        st.session_state[start_key], inception_date, today_date, default_start
+    ).date()
+    st.session_state[end_key] = _clamp_date_to_bounds(
+        st.session_state[end_key], inception_date, today_date, default_end
+    ).date()
+
     c1, c2 = st.columns(2)
     with c1:
-        start = st.date_input("Start Date", value=pd.Timestamp("2025-01-01").date())
+        start = st.date_input(
+            "Start Date",
+            min_value=inception_date.date(),
+            max_value=today_date.date(),
+            key=start_key,
+        )
     with c2:
-        end = st.date_input("End Date", value=pd.Timestamp.today().date())
+        end = st.date_input(
+            "End Date",
+            min_value=inception_date.date(),
+            max_value=today_date.date(),
+            key=end_key,
+        )
+    if pd.Timestamp(start) > pd.Timestamp(end):
+        st.session_state[end_key] = start
+        end = start
     try:
         holdings_as_of_default = get_latest_market_date() if bbg_ok else None
     except Exception:
         holdings_as_of_default = None
-    holdings_as_of_default = holdings_as_of_default or pd.Timestamp.today().normalize()
-    holdings_as_of = st.date_input("Holdings As Of", value=holdings_as_of_default.date())
+    holdings_as_of_default = holdings_as_of_default or today_date
+    holdings_as_of_default = min(max(pd.to_datetime(holdings_as_of_default).normalize(), inception_date), today_date)
+    holdings_as_of = st.date_input(
+        "Holdings As Of",
+        value=holdings_as_of_default.date(),
+        min_value=inception_date.date(),
+        max_value=today_date.date(),
+    )
 
-    c3, c4 = st.columns([1, 2])
-    with c3:
-        use_lookback = st.checkbox("Use Lookback Days", value=False)
-    with c4:
-        lookback_days = st.number_input("Lookback Days", min_value=1, max_value=10000, value=365, step=1)
     unit = st.radio("Display Unit", options=["%", "bps"], horizontal=True, index=0)
 
-    if st.button("Run Attribution", type="primary", disabled=not bbg_ok):
-        with st.spinner("Running attribution..."):
-            if use_lookback:
-                run_attribution_for_window(repo, lookback_days=int(lookback_days))
-            else:
-                run_attribution_for_window(
-                    repo,
-                    start_date=pd.Timestamp(start),
-                    end_date=pd.Timestamp(end),
-                    lookback_days=None,
-                )
-        st.success("Attribution run complete.")
+    rc1, rc2 = st.columns([1, 2])
+    with rc1:
+        if st.button("Refresh Bloomberg Cache", disabled=not bbg_ok):
+            cache_bar = st.progress(0, text="Starting cache refresh...")
+            cache_step = st.empty()
+
+            def _on_cache_progress(pct: int, msg: str) -> None:
+                pct = max(0, min(100, int(pct)))
+                cache_bar.progress(pct, text=msg)
+                cache_step.caption(f"Step: {msg}")
+
+            refresh_bloomberg_cache(
+                repo,
+                start_date=inception_date,
+                end_date=today_date,
+                progress_callback=_on_cache_progress,
+            )
+            cache_bar.progress(100, text="Cache refresh complete")
+            st.success("Bloomberg cache refreshed.")
+            has_cache = True
+    with rc2:
+        st.caption("Use this first to fetch/update benchmark, sector, and portfolio market data. Date-range runs will reuse this cache.")
+
+    run_disabled = not (bbg_ok or has_cache)
+    if run_disabled:
+        st.caption("Run Attribution is disabled: no Bloomberg connection and no local attribution cache found. Refresh cache on a Bloomberg-enabled machine first.")
+    if st.button("Run Attribution", type="primary", disabled=run_disabled):
+        progress_bar = st.progress(0, text="Starting attribution...")
+        step_text = st.empty()
+
+        def _on_progress(pct: int, msg: str) -> None:
+            pct = max(0, min(100, int(pct)))
+            progress_bar.progress(pct, text=msg)
+            step_text.caption(f"Step: {msg}")
+
+        try:
+            run_attribution_for_window(
+                repo,
+                start_date=pd.Timestamp(start),
+                end_date=pd.Timestamp(end),
+                lookback_days=None,
+                progress_callback=_on_progress,
+            )
+            progress_bar.progress(100, text="Attribution complete")
+            st.success("Attribution run complete.")
+        except Exception:
+            progress_bar.progress(100, text="Attribution failed")
+            raise
 
     summary = _load_if_exists(outputs / "attribution_summary.csv")
     daily = _load_if_exists(outputs / "attribution_daily.csv")
@@ -577,7 +832,7 @@ def main() -> None:
     security = _load_if_exists(outputs / "attribution_by_security.csv")
     last_updated = _outputs_last_updated(outputs)
     if last_updated is not None:
-        st.caption(f"Loaded saved outputs last updated: {last_updated.strftime('%Y-%m-%d %H:%M:%S')}")
+        st.caption(f"Loaded saved outputs last updated (America/Chicago): {last_updated.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     holdings, holdings_totals = _compute_live_holdings(str(repo), str(holdings_as_of))
     sec_decomp = None
     if security is not None:
@@ -629,6 +884,40 @@ def main() -> None:
         tc2.metric("Total Cost Basis", f"${float(holdings_totals.get('cost_basis') or 0.0):,.0f}")
         tc3.metric("Total PnL ($)", f"${float(holdings_totals.get('pnl_dollar') or 0.0):,.0f}")
         tc4.metric("Total PnL (%)", f"{float(total_pnl_pct) * 100.0:,.2f}%" if total_pnl_pct is not None else "N/A")
+
+        st.subheader("Upcoming Earnings")
+        earnings_tickers = tuple(
+            sorted(
+                holdings.loc[
+                    (holdings["ticker"] != "CASH") & (holdings["shares"].fillna(0) > 0),
+                    "ticker",
+                ]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+        )
+        earnings = _compute_upcoming_earnings(str(repo), str(holdings_as_of), earnings_tickers)
+        if earnings.empty:
+            if bbg_ok:
+                st.caption("No upcoming earnings found for current holdings.")
+            else:
+                st.caption("Upcoming earnings requires Bloomberg connectivity in this runtime.")
+        else:
+            st.dataframe(
+                earnings,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "ticker": "Ticker",
+                    "company": "Company",
+                    "report_date": st.column_config.DateColumn("Earnings Date"),
+                    "days_until": st.column_config.NumberColumn("Days Until", format="%d"),
+                    "session": "Session",
+                    "time_note": "Time Detail",
+                },
+            )
 
     if summary is not None:
         st.subheader("Summary")
