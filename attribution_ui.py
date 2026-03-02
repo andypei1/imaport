@@ -633,14 +633,61 @@ def _compute_security_decomp(repo: str, start_date: str, end_date: str) -> pd.Da
     )
     nav_df = compute_daily_nav(positions_df, cash_df, prices_df)
 
-    with BloombergClient(BloombergConfig()) as bbg:
-        bench = bbg.get_historical_px_last({"SML Index": "SML Index"}, start - pd.Timedelta(days=10), end)
-        bench = bench.sort_values("date")
-        bench["ret"] = bench["price"].pct_change()
-        trading_dates = pd.DatetimeIndex(bench.loc[bench["ret"].notna(), "date"])
-        trading_dates = trading_dates[(trading_dates >= start) & (trading_dates <= end)]
-        alias_map = _load_alias_map(alias_path)
-        sector_by_symbol = _resolve_sector_by_symbol(bbg, symbols, alias_map=alias_map)
+    # Prefer cached mappings/dates so this works in hosted/offline mode.
+    trading_dates = pd.DatetimeIndex([])
+    cache_dir = repo_path / "outputs" / "cache"
+    bench_cache = _load_if_exists(cache_dir / "benchmark_px.csv")
+    if bench_cache is not None and not bench_cache.empty and "date" in bench_cache.columns:
+        bc = bench_cache.copy()
+        bc["date"] = pd.to_datetime(bc["date"], errors="coerce").dt.normalize()
+        if "benchmark_return" in bc.columns:
+            trading_dates = pd.DatetimeIndex(
+                bc.loc[bc["benchmark_return"].notna(), "date"].dropna().unique()
+            )
+        elif "tri" in bc.columns:
+            bc = bc.sort_values("date")
+            bc["ret"] = pd.to_numeric(bc["tri"], errors="coerce").pct_change()
+            trading_dates = pd.DatetimeIndex(bc.loc[bc["ret"].notna(), "date"].dropna().unique())
+        elif "price" in bc.columns:
+            bc = bc.sort_values("date")
+            bc["ret"] = pd.to_numeric(bc["price"], errors="coerce").pct_change()
+            trading_dates = pd.DatetimeIndex(bc.loc[bc["ret"].notna(), "date"].dropna().unique())
+    if len(trading_dates) == 0:
+        trading_dates = pd.DatetimeIndex(sorted(prices_df["date"].dropna().unique()))
+    trading_dates = pd.DatetimeIndex(trading_dates)
+    trading_dates = trading_dates[(trading_dates >= start) & (trading_dates <= end)]
+
+    sector_by_symbol: dict[str, str] = {}
+    sector_cache = _load_if_exists(cache_dir / "portfolio_sector_map.csv")
+    if sector_cache is not None and not sector_cache.empty and {"symbol", "sector"}.issubset(set(sector_cache.columns)):
+        sc = sector_cache.copy()
+        sc["symbol"] = sc["symbol"].astype(str).str.strip()
+        sc["sector"] = sc["sector"].astype(str).str.strip()
+        sector_by_symbol = sc.drop_duplicates("symbol").set_index("symbol")["sector"].to_dict()
+
+    missing = [s for s in symbols if s not in sector_by_symbol or not str(sector_by_symbol.get(s, "")).strip()]
+    if missing:
+        if "sector" in security.columns:
+            sec_map = security[["symbol", "sector"]].dropna().drop_duplicates("symbol")
+            for _, row in sec_map.iterrows():
+                sym = str(row["symbol"]).strip()
+                if sym in missing:
+                    sector_by_symbol[sym] = str(row["sector"]).strip() or "Unknown"
+        missing = [s for s in symbols if s not in sector_by_symbol or not str(sector_by_symbol.get(s, "")).strip()]
+
+    if missing:
+        try:
+            with BloombergClient(BloombergConfig()) as bbg:
+                alias_map = _load_alias_map(alias_path)
+                resolved = _resolve_sector_by_symbol(bbg, missing, alias_map=alias_map)
+            for sym, sec in resolved.items():
+                if str(sec).strip():
+                    sector_by_symbol[sym] = str(sec).strip()
+        except Exception:
+            pass
+    for s in symbols:
+        if not str(sector_by_symbol.get(s, "")).strip():
+            sector_by_symbol[s] = "Unknown"
     split_events = (
         trades_df[trades_df["txn_type"].isin(POSITION_ADDITION_TYPES)][["trade_date", "symbol"]]
         .rename(columns={"trade_date": "date"})
@@ -836,14 +883,14 @@ def main() -> None:
     holdings, holdings_totals = _compute_live_holdings(str(repo), str(holdings_as_of))
     sec_decomp = None
     if security is not None:
-        if bbg_ok:
+        try:
             if daily is not None and not daily.empty and "date" in daily.columns:
                 d0 = pd.to_datetime(daily["date"]).min().strftime("%Y-%m-%d")
                 d1 = pd.to_datetime(daily["date"]).max().strftime("%Y-%m-%d")
                 sec_decomp = _compute_security_decomp(str(repo), d0, d1)
             else:
                 sec_decomp = _compute_security_decomp(str(repo), str(start), str(end))
-        else:
+        except Exception:
             sec_decomp = security.copy()
         if sec_decomp is not None and not sec_decomp.empty and "selection_effect" in sec_decomp.columns:
             sec_decomp = sec_decomp[sec_decomp["selection_effect"].abs() > 1e-12]
