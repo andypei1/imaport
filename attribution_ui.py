@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -229,6 +230,292 @@ def _has_attribution_cache(repo_path: Path) -> bool:
         cdir / "portfolio_sector_map.csv",
     ]
     return all(p.exists() for p in required)
+
+
+def _load_nav_history(outputs_dir: Path) -> pd.DataFrame:
+    nav_path = outputs_dir / "nav.csv"
+    if not nav_path.exists():
+        return pd.DataFrame(columns=["date", "nav", "external_flow"])
+    nav = pd.read_csv(nav_path)
+    nav["date"] = pd.to_datetime(nav.get("date"), errors="coerce").dt.normalize()
+    nav = nav.dropna(subset=["date"]).sort_values("date")
+    nav["nav"] = pd.to_numeric(nav.get("nav"), errors="coerce")
+    nav["external_flow"] = pd.to_numeric(nav.get("external_flow"), errors="coerce").fillna(0.0)
+    return nav[["date", "nav", "external_flow"]].dropna(subset=["nav"]).copy()
+
+
+def _load_benchmark_history(cache_dir: Path) -> pd.DataFrame:
+    bench_path = cache_dir / "benchmark_px.csv"
+    if not bench_path.exists():
+        return pd.DataFrame(columns=["date", "benchmark_return"])
+    bench = pd.read_csv(bench_path)
+    bench["date"] = pd.to_datetime(bench.get("date"), errors="coerce").dt.normalize()
+    bench = bench.dropna(subset=["date"]).sort_values("date")
+    if "benchmark_return" in bench.columns:
+        bench["benchmark_return"] = pd.to_numeric(bench["benchmark_return"], errors="coerce")
+    elif "tri" in bench.columns:
+        bench["tri"] = pd.to_numeric(bench["tri"], errors="coerce")
+        bench["benchmark_return"] = bench["tri"].pct_change()
+    elif "price" in bench.columns:
+        bench["price"] = pd.to_numeric(bench["price"], errors="coerce")
+        bench["benchmark_return"] = bench["price"].pct_change()
+    else:
+        bench["benchmark_return"] = pd.NA
+    return bench[["date", "benchmark_return"]].copy()
+
+
+def _annualize_return(total_return: float, start_date: pd.Timestamp, end_date: pd.Timestamp) -> float | None:
+    if pd.isna(total_return):
+        return None
+    days = int((pd.to_datetime(end_date) - pd.to_datetime(start_date)).days)
+    if days <= 0:
+        return None
+    if total_return <= -1.0:
+        return None
+    years = days / 365.25
+    if years <= 0:
+        return None
+    return float((1.0 + float(total_return)) ** (1.0 / years) - 1.0)
+
+
+def _period_start(end_date: pd.Timestamp, label: str, inception: pd.Timestamp) -> pd.Timestamp:
+    label = str(label).strip()
+    if label == "YTD":
+        start = pd.Timestamp(year=end_date.year, month=1, day=1)
+    elif label == "6M":
+        start = end_date - pd.DateOffset(months=6)
+    elif label == "1Y":
+        start = end_date - pd.DateOffset(years=1)
+    elif label == "2Y":
+        start = end_date - pd.DateOffset(years=2)
+    elif label == "5Y":
+        start = end_date - pd.DateOffset(years=5)
+    else:
+        start = inception
+    return max(pd.to_datetime(start).normalize(), pd.to_datetime(inception).normalize())
+
+
+def _build_performance_panel(repo_path: Path, outputs_dir: Path) -> pd.DataFrame:
+    nav = _load_nav_history(outputs_dir)
+    bench = _load_benchmark_history(outputs_dir / "cache")
+    if nav.empty:
+        return pd.DataFrame(columns=["date", "nav", "portfolio_return", "benchmark_return"])
+    nav = nav.sort_values("date").drop_duplicates("date")
+    bench = bench.sort_values("date").drop_duplicates("date")
+    bench = bench[bench["benchmark_return"].notna()].copy()
+    if bench.empty:
+        return pd.DataFrame(columns=["date", "nav", "portfolio_return", "benchmark_return"])
+
+    nav_idx = nav.set_index("date").sort_index()
+    flow_series = nav_idx["external_flow"].copy()
+
+    rows: list[dict[str, object]] = []
+    prev_date: pd.Timestamp | None = None
+    for _, br in bench.iterrows():
+        d = pd.to_datetime(br["date"]).normalize()
+        if d not in nav_idx.index:
+            continue
+        nav_d = float(nav_idx.at[d, "nav"])
+        if prev_date is None:
+            prev_date = d
+            continue
+        if prev_date not in nav_idx.index:
+            prev_date = d
+            continue
+        nav_prev = float(nav_idx.at[prev_date, "nav"])
+        if nav_prev == 0 or pd.isna(nav_prev):
+            prev_date = d
+            continue
+        flows_between = float(flow_series[(flow_series.index > prev_date) & (flow_series.index <= d)].sum())
+        p_ret = (nav_d - nav_prev - flows_between) / nav_prev
+        rows.append(
+            {
+                "date": d,
+                "nav": nav_d,
+                "portfolio_return": float(p_ret),
+                "benchmark_return": float(br["benchmark_return"]),
+            }
+        )
+        prev_date = d
+
+    if not rows:
+        return pd.DataFrame(columns=["date", "nav", "portfolio_return", "benchmark_return"])
+    return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+
+
+def _render_performance_section(repo_path: Path, outputs_dir: Path) -> None:
+    perf = _build_performance_panel(repo_path, outputs_dir)
+    if perf.empty:
+        return
+
+    st.subheader("Portfolio Performance")
+    period_options = ["YTD", "6M", "1Y", "2Y", "5Y", "Since Inception"]
+    period = st.radio("Performance Window", options=period_options, horizontal=True, index=0, key="perf_window")
+
+    end_date = pd.to_datetime(perf["date"].max()).normalize()
+    inception = pd.to_datetime(perf["date"].min()).normalize()
+    start_date = _period_start(end_date, period, inception)
+    window = perf[(perf["date"] >= start_date) & (perf["date"] <= end_date)].copy()
+    if window.empty:
+        st.caption("No performance data available for the selected window.")
+        return
+
+    window["cum_portfolio"] = (1.0 + window["portfolio_return"]).cumprod() - 1.0
+    window["cum_benchmark"] = (1.0 + window["benchmark_return"]).cumprod() - 1.0
+    window["cum_active"] = window["cum_portfolio"] - window["cum_benchmark"]
+
+    aum_min = float(window["nav"].min())
+    aum_max = float(window["nav"].max())
+    aum_pad = max((aum_max - aum_min) * 0.08, max(aum_max, 1.0) * 0.02)
+    aum_chart = (
+        alt.Chart(window)
+        .mark_line(color="#13294B", strokeWidth=2)
+        .encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y(
+                "nav:Q",
+                title="AUM ($)",
+                axis=alt.Axis(format="$,.0f"),
+                scale=alt.Scale(zero=False, domain=[aum_min - aum_pad, aum_max + aum_pad]),
+            ),
+            tooltip=[alt.Tooltip("date:T", title="Date"), alt.Tooltip("nav:Q", title="AUM", format=",.0f")],
+        )
+        .properties(height=360)
+    )
+    st.altair_chart(aum_chart, use_container_width=True)
+
+    ret_lines = pd.concat(
+        [
+            window[["date", "cum_portfolio"]].rename(columns={"cum_portfolio": "value"}).assign(series="Portfolio"),
+            window[["date", "cum_benchmark"]].rename(columns={"cum_benchmark": "value"}).assign(series="SML Index"),
+        ],
+        ignore_index=True,
+    )
+    ret_lines["value_pct"] = ret_lines["value"] * 100.0
+    ret_lines["opacity"] = ret_lines["series"].map({"Portfolio": 1.0, "SML Index": 0.35}).fillna(1.0)
+
+    y_min = float(min(ret_lines["value_pct"].min(), (window["cum_active"] * 100.0).min(), 0.0))
+    y_max = float(max(ret_lines["value_pct"].max(), (window["cum_active"] * 100.0).max(), 0.0))
+    y_pad = max((y_max - y_min) * 0.08, 1.0)
+    y_scale = alt.Scale(domain=[y_min - y_pad, y_max + y_pad])
+
+    return_line_chart = (
+        alt.Chart(ret_lines)
+        .mark_line(strokeWidth=2)
+        .encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y("value_pct:Q", title="Cumulative Return / Outperformance (%)", scale=y_scale),
+            color=alt.Color("series:N", scale=alt.Scale(domain=["Portfolio", "SML Index"], range=["#E84A27", "#4C78A8"])),
+            opacity=alt.Opacity("opacity:Q", legend=None),
+            tooltip=[
+                alt.Tooltip("date:T", title="Date"),
+                alt.Tooltip("series:N", title="Series"),
+                alt.Tooltip("value_pct:Q", title="Cumulative Return", format=".2f"),
+            ],
+        )
+        .properties(height=380)
+    )
+
+    bars = window[["date", "cum_active"]].copy()
+    bars["cum_active_pct"] = bars["cum_active"] * 100.0
+    outperf_chart = (
+        alt.Chart(bars)
+        .mark_bar(color="#8DA0BC", opacity=0.22)
+        .encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y("cum_active_pct:Q", scale=y_scale),
+            tooltip=[
+                alt.Tooltip("date:T", title="Date"),
+                alt.Tooltip("cum_active_pct:Q", title="Cumulative Outperformance", format=".2f"),
+            ],
+        )
+        .properties(height=380)
+    )
+    zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#9AA0A6", strokeDash=[4, 4]).encode(y="y:Q")
+    st.altair_chart(outperf_chart + zero_line + return_line_chart, use_container_width=True)
+
+    rows: list[dict[str, object]] = []
+    inception = pd.to_datetime(perf["date"].min()).normalize()
+    years = sorted(perf["date"].dt.year.unique().tolist())
+    current_year = int(perf["date"].max().year)
+    for y in years:
+        ydf = perf[perf["date"].dt.year == y]
+        if ydf.empty:
+            continue
+        period_start = pd.to_datetime(ydf["date"].min()).normalize()
+        period_end = pd.to_datetime(ydf["date"].max()).normalize()
+        yr_p = float((1.0 + ydf["portfolio_return"]).prod() - 1.0)
+        yr_b = float((1.0 + ydf["benchmark_return"]).prod() - 1.0)
+        si = perf[(perf["date"] >= inception) & (perf["date"] <= period_end)].copy()
+        si_p = float((1.0 + si["portfolio_return"]).prod() - 1.0)
+        si_b = float((1.0 + si["benchmark_return"]).prod() - 1.0)
+        si_p_ann = _annualize_return(si_p, inception, period_end)
+        si_b_ann = _annualize_return(si_b, inception, period_end)
+        label = f"{y} YTD" if y == current_year else str(y)
+        rows.append(
+            {
+                "period": label,
+                "portfolio_return": yr_p * 100.0,
+                "benchmark_return": yr_b * 100.0,
+                "active_return": (yr_p - yr_b) * 100.0,
+                "portfolio_since_inception_cumulative": si_p * 100.0,
+                "sml_since_inception_cumulative": si_b * 100.0,
+            }
+        )
+
+    p_total = float((1.0 + perf["portfolio_return"]).prod() - 1.0)
+    b_total = float((1.0 + perf["benchmark_return"]).prod() - 1.0)
+    p_ann = _annualize_return(p_total, perf["date"].min(), perf["date"].max())
+    b_ann = _annualize_return(b_total, perf["date"].min(), perf["date"].max())
+    rows.append(
+        {
+            "period": "Since Inception",
+            "portfolio_return": p_total * 100.0,
+            "benchmark_return": b_total * 100.0,
+            "active_return": (p_total - b_total) * 100.0,
+            "portfolio_since_inception_cumulative": p_total * 100.0,
+            "sml_since_inception_cumulative": b_total * 100.0,
+        }
+    )
+    rows.append(
+        {
+            "period": "Since Inception (Annualized)",
+            "portfolio_return": (p_ann * 100.0) if p_ann is not None else pd.NA,
+            "benchmark_return": (b_ann * 100.0) if b_ann is not None else pd.NA,
+            "active_return": ((p_ann - b_ann) * 100.0) if (p_ann is not None and b_ann is not None) else pd.NA,
+            "portfolio_since_inception_cumulative": p_total * 100.0,
+            "sml_since_inception_cumulative": b_total * 100.0,
+        }
+    )
+
+    metrics = pd.DataFrame(rows)
+    display = metrics.copy()
+    pct_cols = [
+        "portfolio_return",
+        "benchmark_return",
+        "active_return",
+        "portfolio_since_inception_cumulative",
+        "sml_since_inception_cumulative",
+    ]
+    for c in pct_cols:
+        display[c] = pd.to_numeric(display[c], errors="coerce").map(lambda v: f"{v:,.2f}%" if pd.notna(v) else "")
+    display = display.rename(
+        columns={
+            "period": "Period",
+            "portfolio_return": "Portfolio Return",
+            "benchmark_return": "SML Return",
+            "active_return": "Active Return",
+            "portfolio_since_inception_cumulative": "Portfolio Since Inception Cumulative",
+            "sml_since_inception_cumulative": "SML Since Inception Cumulative",
+        }
+    )
+    mask_bottom = display["Period"].isin(["Since Inception", "Since Inception (Annualized)"])
+    display.loc[mask_bottom, "Portfolio Since Inception Cumulative"] = ""
+    display.loc[mask_bottom, "SML Since Inception Cumulative"] = ""
+    display.index = [""] * len(display)
+    st.table(display)
+    inception_year = int(inception.year)
+    st.caption(f"* {inception_year} return starts at fund inception date ({inception.strftime('%Y-%m-%d')}), not Jan 1.")
 
 
 def _first_non_blank(values: list[object]) -> object | None:
@@ -764,6 +1051,10 @@ def main() -> None:
     else:
         st.warning(bbg_msg)
         st.info("Offline mode: live Bloomberg pulls are disabled. Displaying saved outputs and local fallback data where available.")
+    last_updated = _outputs_last_updated(outputs)
+    if last_updated is not None:
+        st.caption(f"Loaded saved outputs last updated (America/Chicago): {last_updated.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    _render_performance_section(repo, outputs)
 
     inception_date, today_date = _portfolio_date_bounds(repo)
     has_cache = _has_attribution_cache(repo)
@@ -877,9 +1168,6 @@ def main() -> None:
     daily = _load_if_exists(outputs / "attribution_daily.csv")
     sector = _load_if_exists(outputs / "attribution_by_sector.csv")
     security = _load_if_exists(outputs / "attribution_by_security.csv")
-    last_updated = _outputs_last_updated(outputs)
-    if last_updated is not None:
-        st.caption(f"Loaded saved outputs last updated (America/Chicago): {last_updated.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     holdings, holdings_totals = _compute_live_holdings(str(repo), str(holdings_as_of))
     sec_decomp = None
     if security is not None:
@@ -1045,11 +1333,7 @@ def main() -> None:
             column_config=_effect_number_config(sec_scaled, unit, skip_cols={"symbol", "sector", "holding_days"}),
         )
 
-    p1 = outputs / "attribution_cum_returns.png"
     p2 = outputs / "attribution_cum_effects.png"
-    if p1.exists():
-        st.subheader("Cumulative Returns")
-        st.image(str(p1))
     if p2.exists():
         st.subheader("Cumulative Effects")
         st.image(str(p2))

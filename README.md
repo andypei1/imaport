@@ -108,3 +108,31 @@ You can run a local Streamlit UI to test custom windows interactively:
 ```bash
 streamlit run attribution_ui.py
 ```
+
+## Windows Setup Helpers
+
+If you are working on a Windows/Bloomberg terminal PC and want a repeatable setup each time, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+```
+
+What this does:
+
+- Finds a working Python interpreter (`py -3.12`, then `py`, then `python`)
+- Installs repo dependencies from `requirements.txt` into your user site-packages (`--user`)
+
+Then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\doctor.ps1
+```
+
+What doctor checks:
+
+- Python executable and version being used
+- Required imports (`pandas`, `matplotlib`, `streamlit`)
+- Optional Bloomberg import (`blpapi`) and warns if unavailable
+- Whether Bloomberg API port `localhost:8194` is reachable
+
+If `doctor.ps1` passes, this machine is ready for local UI + Bloomberg-backed workflows.
