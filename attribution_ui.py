@@ -5,10 +5,16 @@ import math
 import sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from typing import Optional
 
 import altair as alt
 import pandas as pd
 import streamlit as st
+
+try:
+    import yfinance as yf  # type: ignore
+except Exception:
+    yf = None
 
 from attribution_poc import run_attribution_for_window, refresh_bloomberg_cache
 from src.portfolio.load_transactions import load_transactions, POSITION_ADDITION_TYPES
@@ -66,6 +72,133 @@ def _load_alias_map(path: Path | None) -> dict[str, str]:
     if ticker_col is None:
         return {}
     return df.set_index("symbol")[ticker_col].astype(str).to_dict()
+
+
+def _load_yf_alias_map(path: Path | None) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+    if "symbol" not in df.columns:
+        return {}
+    if "yfinance_ticker" not in df.columns:
+        return {}
+    out = (
+        df[["symbol", "yfinance_ticker"]]
+        .dropna()
+        .assign(symbol=lambda x: x["symbol"].astype(str).str.strip(), yfinance_ticker=lambda x: x["yfinance_ticker"].astype(str).str.strip())
+    )
+    out = out[out["symbol"] != ""]
+    out = out[out["yfinance_ticker"] != ""]
+    return out.drop_duplicates("symbol").set_index("symbol")["yfinance_ticker"].to_dict()
+
+
+def _last_on_or_before(series: pd.Series, target: pd.Timestamp) -> float | None:
+    if series.empty:
+        return None
+    sub = series[series.index <= target]
+    if sub.empty:
+        return None
+    v = sub.iloc[-1]
+    if pd.isna(v):
+        return None
+    return float(v)
+
+
+@st.cache_data(show_spinner=False, ttl=20)
+def _fetch_live_yf_quotes(symbols: tuple[str, ...], alias_csv: Optional[str]) -> pd.DataFrame:
+    cols = ["ticker", "today_price", "ret_1d", "ret_1w", "ret_1m"]
+    if yf is None or not symbols:
+        return pd.DataFrame(columns=cols)
+
+    alias_path = Path(alias_csv) if alias_csv else None
+    yf_alias = _load_yf_alias_map(alias_path)
+    ticker_to_yf = {s: yf_alias.get(s, s) for s in symbols}
+    unique_yf = tuple(sorted({v for v in ticker_to_yf.values() if str(v).strip()}))
+    if not unique_yf:
+        return pd.DataFrame(columns=cols)
+
+    daily_rows: list[dict] = []
+    try:
+        daily = yf.download(
+            tickers=list(unique_yf),
+            period="3mo",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+            threads=True,
+        )
+    except Exception:
+        daily = pd.DataFrame()
+
+    intraday_last: dict[str, float] = {}
+    try:
+        intraday = yf.download(
+            tickers=list(unique_yf),
+            period="1d",
+            interval="1m",
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+            threads=True,
+            prepost=False,
+        )
+    except Exception:
+        intraday = pd.DataFrame()
+
+    def _extract_series(df: pd.DataFrame, yf_ticker: str, field: str) -> pd.Series:
+        if df is None or df.empty:
+            return pd.Series(dtype="float64")
+        try:
+            if isinstance(df.columns, pd.MultiIndex):
+                if yf_ticker in df.columns.get_level_values(0):
+                    s = df[(yf_ticker, field)]
+                elif field in df.columns.get_level_values(0):
+                    s = df[field]
+                else:
+                    return pd.Series(dtype="float64")
+            else:
+                if field not in df.columns:
+                    return pd.Series(dtype="float64")
+                s = df[field]
+            s = pd.to_numeric(s, errors="coerce").dropna()
+            s.index = pd.to_datetime(s.index).tz_localize(None)
+            return s
+        except Exception:
+            return pd.Series(dtype="float64")
+
+    now = pd.Timestamp.now(tz="America/Chicago").tz_localize(None)
+    d_1 = now - pd.Timedelta(days=1)
+    d_7 = now - pd.Timedelta(days=7)
+    d_30 = now - pd.Timedelta(days=30)
+
+    for ticker, yf_ticker in ticker_to_yf.items():
+        ds = _extract_series(daily, yf_ticker, "Close")
+        ids = _extract_series(intraday, yf_ticker, "Close")
+        today_price = float(ids.iloc[-1]) if not ids.empty else (_last_on_or_before(ds, now))
+        prev_1d = _last_on_or_before(ds, d_1)
+        prev_1w = _last_on_or_before(ds, d_7)
+        prev_1m = _last_on_or_before(ds, d_30)
+
+        def _ret(curr: float | None, prev: float | None) -> float | None:
+            if curr is None or prev is None or prev == 0:
+                return None
+            return (curr / prev) - 1.0
+
+        daily_rows.append(
+            {
+                "ticker": ticker,
+                "today_price": today_price,
+                "ret_1d": _ret(today_price, prev_1d),
+                "ret_1w": _ret(today_price, prev_1w),
+                "ret_1m": _ret(today_price, prev_1m),
+            }
+        )
+
+    if not daily_rows:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(daily_rows)[cols]
 
 
 def _bbg_security_candidates(symbol: str, alias_map: dict[str, str] | None = None) -> list[str]:
@@ -288,6 +421,8 @@ def _period_start(end_date: pd.Timestamp, label: str, inception: pd.Timestamp) -
         start = end_date - pd.DateOffset(years=1)
     elif label == "2Y":
         start = end_date - pd.DateOffset(years=2)
+    elif label == "3Y":
+        start = end_date - pd.DateOffset(years=3)
     elif label == "5Y":
         start = end_date - pd.DateOffset(years=5)
     else:
@@ -512,8 +647,7 @@ def _render_performance_section(repo_path: Path, outputs_dir: Path) -> None:
     mask_bottom = display["Period"].isin(["Since Inception", "Since Inception (Annualized)"])
     display.loc[mask_bottom, "Portfolio Since Inception Cumulative"] = ""
     display.loc[mask_bottom, "SML Since Inception Cumulative"] = ""
-    display.index = [""] * len(display)
-    st.table(display)
+    st.dataframe(display, use_container_width=True, hide_index=True)
     inception_year = int(inception.year)
     st.caption(f"* {inception_year} return starts at fund inception date ({inception.strftime('%Y-%m-%d')}), not Jan 1.")
 
@@ -666,6 +800,129 @@ def _xirr(cashflows: list[tuple[pd.Timestamp, float]]) -> float | None:
     return r if math.isfinite(r) else None
 
 
+def _return_cell_color(v: object) -> str:
+    try:
+        x = float(v)
+    except Exception:
+        return ""
+    if pd.isna(x):
+        return ""
+    if x > 0:
+        return "color: #1b7f3a; font-weight: 600;"
+    if x < 0:
+        return "color: #b42318; font-weight: 600;"
+    return "color: #667085;"
+
+
+def _live_flash_styles(df: pd.DataFrame, changed_cells: set[tuple[str, str]]) -> pd.DataFrame:
+    styles = pd.DataFrame("", index=df.index, columns=df.columns)
+    for ticker, col in changed_cells:
+        if ticker in styles.index and col in styles.columns:
+            styles.at[ticker, col] = "background-color: #fff3bf;"
+    return styles
+
+
+@st.fragment(run_every=5)
+def _render_live_holdings_fragment(repo: str, as_of_date: str) -> None:
+    holdings, holdings_totals, changed_count = _compute_live_holdings(repo, as_of_date)
+    if holdings is None or holdings.empty:
+        return
+
+    st.subheader("Live Holdings")
+    h_view = holdings[
+        [
+            "ticker",
+            "company",
+            "today_price",
+            "ret_1d",
+            "ret_1w",
+            "ret_1m",
+            "market_value",
+            "weight",
+            "avg_price",
+            "pnl_dollar",
+            "pnl_pct",
+            "first_buy_date",
+            "irr",
+        ]
+    ].copy()
+    h_view["first_buy_date"] = pd.to_datetime(h_view["first_buy_date"], errors="coerce")
+    for col in ["ret_1d", "ret_1w", "ret_1m", "weight", "pnl_pct", "irr"]:
+        h_view[col] = h_view[col] * 100.0
+
+    h_display = h_view.rename(
+        columns={
+            "ticker": "Ticker",
+            "company": "Company",
+            "today_price": "Today Price",
+            "ret_1d": "1D",
+            "ret_1w": "1W",
+            "ret_1m": "1M",
+            "market_value": "Market Value",
+            "weight": "Weight",
+            "avg_price": "Average Price",
+            "pnl_dollar": "PnL ($)",
+            "pnl_pct": "PnL (%)",
+            "first_buy_date": "First Buy",
+            "irr": "IRR",
+        }
+    )
+    h_display = h_display.set_index("Ticker", drop=False)
+
+    prev_key = f"live_quote_prev_{as_of_date}"
+    prev = st.session_state.get(prev_key, {})
+    current = {}
+    changed_cells: set[tuple[str, str]] = set()
+    for _, r in h_display.iterrows():
+        t = str(r["Ticker"])
+        current[t] = {
+            "Today Price": pd.to_numeric(r["Today Price"], errors="coerce"),
+            "1D": pd.to_numeric(r["1D"], errors="coerce"),
+            "1W": pd.to_numeric(r["1W"], errors="coerce"),
+            "1M": pd.to_numeric(r["1M"], errors="coerce"),
+        }
+        p = prev.get(t)
+        if isinstance(p, dict):
+            for c in ["Today Price", "1D", "1W", "1M"]:
+                old_v = p.get(c)
+                new_v = current[t][c]
+                if pd.notna(old_v) and pd.notna(new_v) and abs(float(new_v) - float(old_v)) > 1e-9:
+                    changed_cells.add((t, c))
+    st.session_state[prev_key] = current
+
+    h_styled = (
+        h_display.style.format(
+            {
+                "Today Price": lambda x: f"${x:,.2f}" if pd.notna(x) else "NA",
+                "1D": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
+                "1W": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
+                "1M": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
+                "Market Value": lambda x: f"${x:,.0f}" if pd.notna(x) else "NA",
+                "Weight": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
+                "Average Price": lambda x: f"${x:,.2f}" if pd.notna(x) else "NA",
+                "PnL ($)": lambda x: f"${x:,.0f}" if pd.notna(x) else "NA",
+                "PnL (%)": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
+                "First Buy": lambda x: pd.to_datetime(x).strftime("%Y-%m-%d") if pd.notna(x) else "NA",
+                "IRR": lambda x: f"{x:.2f}%" if pd.notna(x) else "NA",
+            }
+        )
+        .map(_return_cell_color, subset=["1D", "1W", "1M"])
+        .apply(lambda df: _live_flash_styles(df, changed_cells), axis=None)
+    )
+    st.dataframe(h_styled, use_container_width=True, hide_index=True)
+    st.caption("Market data for Today Price / 1D / 1W / 1M is from yfinance and is typically delayed by ~15 minutes.")
+    st.caption("IRR is only calculated for holdings held longer than a calendar year.")
+    update_text = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S %Z")
+    st.caption(f"Last quote update: {update_text} | Symbols updated this cycle: {changed_count}")
+
+    total_pnl_pct = holdings_totals.get("pnl_pct")
+    tc1, tc2, tc3, tc4 = st.columns(4)
+    tc1.metric("Total Market Value", f"${float(holdings_totals.get('market_value') or 0.0):,.0f}")
+    tc2.metric("Total Cost Basis", f"${float(holdings_totals.get('cost_basis') or 0.0):,.0f}")
+    tc3.metric("Total PnL ($)", f"${float(holdings_totals.get('pnl_dollar') or 0.0):,.0f}")
+    tc4.metric("Total PnL (%)", f"{float(total_pnl_pct) * 100.0:,.2f}%" if total_pnl_pct is not None else "N/A")
+
+
 def _most_recent_open_cycle_start(sym_trades: pd.DataFrame) -> pd.Timestamp | None:
     """Return start date of the most recent currently-open position cycle."""
     if sym_trades.empty:
@@ -689,7 +946,7 @@ def _most_recent_open_cycle_start(sym_trades: pd.DataFrame) -> pd.Timestamp | No
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, dict[str, float | None]]:
+def _compute_live_holdings_base(repo: str, as_of_date: str) -> tuple[pd.DataFrame, dict[str, float | None]]:
     repo_path = Path(repo)
     as_of = pd.to_datetime(as_of_date).normalize()
     trades_df, cashflows_df = load_transactions(str(repo_path / "Transactions.csv"))
@@ -813,6 +1070,7 @@ def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, di
         nm = pd.DataFrame(columns=["ticker", "company"])
 
     out = shares.rename(columns={"symbol": "ticker"}).merge(px, on="ticker", how="left").merge(ret_df, on="ticker", how="left").merge(cb, on="ticker", how="left").merge(nm, on="ticker", how="left")
+
     out["today_price"] = out["today_price"].fillna(0.0)
     out["cost_basis"] = out["cost_basis"].fillna(0.0)
     out["first_buy_date"] = pd.to_datetime(out["first_buy_date"], errors="coerce")
@@ -826,6 +1084,12 @@ def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, di
     # IRR by symbol from most recent open cycle only.
     if tickers:
         for t in tickers:
+            first_buy = out.loc[out["ticker"] == t, "first_buy_date"].iloc[0] if (out["ticker"] == t).any() else pd.NaT
+            if pd.isna(first_buy):
+                continue
+            holding_days = int((as_of - pd.to_datetime(first_buy).normalize()).days)
+            if holding_days < 365:
+                continue
             sym_trades = trades[trades["symbol"] == t].copy()
             cycle_start = _most_recent_open_cycle_start(sym_trades)
             if cycle_start is None:
@@ -883,6 +1147,74 @@ def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, di
     if totals["cost_basis"] != 0:
         totals["pnl_pct"] = totals["pnl_dollar"] / totals["cost_basis"]
     return out[["ticker", "company", "shares", "first_buy_date", "avg_price", "today_price", "ret_1d", "ret_1w", "ret_1m", "market_value", "cost_basis", "weight", "pnl_dollar", "pnl_pct", "irr"]], totals
+
+
+def _compute_live_holdings(repo: str, as_of_date: str) -> tuple[pd.DataFrame, dict[str, float | None], int]:
+    out, totals = _compute_live_holdings_base(repo, as_of_date)
+    if out.empty:
+        return out, totals, 0
+
+    repo_path = Path(repo)
+    inputs_dir = repo_path / "inputs"
+    alias_path = inputs_dir / "symbol_aliases.csv" if inputs_dir.exists() else None
+
+    live_universe = tuple(
+        sorted(
+            out.loc[(out["ticker"] != "CASH") & (out["shares"].fillna(0) > 0), "ticker"]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+    )
+    alias_csv = str(alias_path) if alias_path is not None and alias_path.exists() else None
+    live_quotes = _fetch_live_yf_quotes(live_universe, alias_csv)
+    if live_quotes.empty:
+        return out, totals, 0
+
+    old_px = out.set_index("ticker")["today_price"].copy()
+    out = out.merge(
+        live_quotes.rename(
+            columns={
+                "today_price": "today_price_live",
+                "ret_1d": "ret_1d_live",
+                "ret_1w": "ret_1w_live",
+                "ret_1m": "ret_1m_live",
+            }
+        ),
+        on="ticker",
+        how="left",
+    )
+    out["today_price"] = out["today_price_live"].where(out["today_price_live"].notna(), out["today_price"])
+    out["ret_1d"] = out["ret_1d_live"].where(out["ret_1d_live"].notna(), out["ret_1d"])
+    out["ret_1w"] = out["ret_1w_live"].where(out["ret_1w_live"].notna(), out["ret_1w"])
+    out["ret_1m"] = out["ret_1m_live"].where(out["ret_1m_live"].notna(), out["ret_1m"])
+    out = out.drop(columns=["today_price_live", "ret_1d_live", "ret_1w_live", "ret_1m_live"], errors="ignore")
+
+    # Recompute valuation metrics from live prices.
+    out["market_value"] = out["shares"] * out["today_price"].fillna(0.0)
+    out.loc[out["ticker"] == "CASH", "market_value"] = out.loc[out["ticker"] == "CASH", "cost_basis"].fillna(0.0)
+    out["pnl_dollar"] = out["market_value"] - out["cost_basis"].fillna(0.0)
+    out["pnl_pct"] = out["pnl_dollar"] / out["cost_basis"].replace(0, pd.NA)
+    total_mv = float(out["market_value"].sum())
+    out["weight"] = out["market_value"] / total_mv if total_mv != 0 else 0.0
+    out = out.sort_values("market_value", ascending=False)
+
+    totals = {
+        "market_value": float(out["market_value"].sum()),
+        "cost_basis": float(out["cost_basis"].sum()),
+        "pnl_dollar": float(out["pnl_dollar"].sum()),
+        "pnl_pct": None,
+    }
+    if totals["cost_basis"] != 0:
+        totals["pnl_pct"] = totals["pnl_dollar"] / totals["cost_basis"]
+
+    changed = 0
+    merged_old = out["ticker"].map(old_px).astype("float64")
+    merged_new = pd.to_numeric(out["today_price"], errors="coerce")
+    delta = (merged_new - merged_old).abs()
+    changed = int((delta > 1e-9).sum())
+    return out, totals, changed
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -1037,6 +1369,10 @@ def main() -> None:
             margin-top: -10px;
             margin-bottom: 20px;
         }
+        .stTabs [data-baseweb="tab-list"] {
+            justify-content: flex-end;
+            gap: 0.5rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1054,7 +1390,6 @@ def main() -> None:
     last_updated = _outputs_last_updated(outputs)
     if last_updated is not None:
         st.caption(f"Loaded saved outputs last updated (America/Chicago): {last_updated.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    _render_performance_section(repo, outputs)
 
     inception_date, today_date = _portfolio_date_bounds(repo)
     has_cache = _has_attribution_cache(repo)
@@ -1068,12 +1403,16 @@ def main() -> None:
     if default_start > default_end:
         default_start = inception_date
 
-    start_key = "start_date_input"
-    end_key = "end_date_input"
+    start_key = "attr_start_date_input"
+    end_key = "attr_end_date_input"
+    range_key = "attr_quick_range"
+    range_applied_key = "attr_quick_range_applied"
     if start_key not in st.session_state:
         st.session_state[start_key] = default_start.date()
     if end_key not in st.session_state:
         st.session_state[end_key] = default_end.date()
+    if range_key not in st.session_state:
+        st.session_state[range_key] = "YTD"
 
     st.session_state[start_key] = _clamp_date_to_bounds(
         st.session_state[start_key], inception_date, today_date, default_start
@@ -1082,261 +1421,250 @@ def main() -> None:
         st.session_state[end_key], inception_date, today_date, default_end
     ).date()
 
-    c1, c2 = st.columns(2)
-    with c1:
-        start = st.date_input(
-            "Start Date",
+    tab_live, tab_performance, tab_attribution = st.tabs(["Live/Intraday", "Performance", "Attribution"])
+
+    with tab_live:
+        try:
+            holdings_as_of_default = get_latest_market_date() if bbg_ok else None
+        except Exception:
+            holdings_as_of_default = None
+        holdings_as_of_default = holdings_as_of_default or today_date
+        holdings_as_of_default = min(max(pd.to_datetime(holdings_as_of_default).normalize(), inception_date), today_date)
+        st.subheader("Live Data")
+        holdings_as_of = st.date_input(
+            "Holdings As Of",
+            value=holdings_as_of_default.date(),
             min_value=inception_date.date(),
             max_value=today_date.date(),
-            key=start_key,
+            format="MM/DD/YYYY",
+            key="holdings_asof_input",
         )
-    with c2:
-        end = st.date_input(
-            "End Date",
-            min_value=inception_date.date(),
-            max_value=today_date.date(),
-            key=end_key,
-        )
-    if pd.Timestamp(start) > pd.Timestamp(end):
-        st.session_state[end_key] = start
-        end = start
-    try:
-        holdings_as_of_default = get_latest_market_date() if bbg_ok else None
-    except Exception:
-        holdings_as_of_default = None
-    holdings_as_of_default = holdings_as_of_default or today_date
-    holdings_as_of_default = min(max(pd.to_datetime(holdings_as_of_default).normalize(), inception_date), today_date)
-    holdings_as_of = st.date_input(
-        "Holdings As Of",
-        value=holdings_as_of_default.date(),
-        min_value=inception_date.date(),
-        max_value=today_date.date(),
-    )
+        holdings, _ = _compute_live_holdings_base(str(repo), str(holdings_as_of))
+        if holdings is not None and not holdings.empty:
+            _render_live_holdings_fragment(str(repo), str(holdings_as_of))
 
-    unit = st.radio("Display Unit", options=["%", "bps"], horizontal=True, index=0)
+            st.subheader("Upcoming Earnings")
+            earnings_tickers = tuple(
+                sorted(
+                    holdings.loc[
+                        (holdings["ticker"] != "CASH") & (holdings["shares"].fillna(0) > 0),
+                        "ticker",
+                    ]
+                    .dropna()
+                    .astype(str)
+                    .unique()
+                    .tolist()
+                )
+            )
+            earnings = _compute_upcoming_earnings(str(repo), str(holdings_as_of), earnings_tickers)
+            if earnings.empty:
+                if bbg_ok:
+                    st.caption("No upcoming earnings found for current holdings.")
+                else:
+                    st.caption("Upcoming earnings requires Bloomberg connectivity in this runtime.")
+            else:
+                st.dataframe(
+                    earnings,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "ticker": "Ticker",
+                        "company": "Company",
+                        "report_date": st.column_config.DateColumn("Earnings Date"),
+                        "days_until": st.column_config.NumberColumn("Days Until", format="%d"),
+                        "session": "Session",
+                        "time_note": "Time Detail",
+                    },
+                )
 
-    rc1, rc2 = st.columns([1, 2])
-    with rc1:
-        if st.button("Refresh Bloomberg Cache", disabled=not bbg_ok):
-            cache_bar = st.progress(0, text="Starting cache refresh...")
-            cache_step = st.empty()
+    with tab_performance:
+        _render_performance_section(repo, outputs)
 
-            def _on_cache_progress(pct: int, msg: str) -> None:
+    with tab_attribution:
+        st.subheader("Attribution")
+        quick_options = ["YTD", "1Y", "2Y", "3Y", "5Y", "Since Inception"]
+        quick = st.radio("Date Preset", options=quick_options, horizontal=True, key=range_key)
+        if st.session_state.get(range_applied_key) != quick:
+            preset_start = _period_start(today_date, quick, inception_date)
+            st.session_state[start_key] = preset_start.date()
+            st.session_state[end_key] = today_date.date()
+            st.session_state[range_applied_key] = quick
+
+        c1, c2 = st.columns(2)
+        with c1:
+            start = st.date_input(
+                "Start Date",
+                min_value=inception_date.date(),
+                max_value=today_date.date(),
+                key=start_key,
+                format="MM/DD/YYYY",
+            )
+        with c2:
+            end = st.date_input(
+                "End Date",
+                min_value=inception_date.date(),
+                max_value=today_date.date(),
+                key=end_key,
+                format="MM/DD/YYYY",
+            )
+        if pd.Timestamp(start) > pd.Timestamp(end):
+            st.session_state[end_key] = start
+            end = start
+
+        unit = st.radio("Display Unit", options=["%", "bps"], horizontal=True, index=0)
+
+        rc1, rc2 = st.columns([1, 2])
+        with rc1:
+            if st.button("Refresh Bloomberg Cache", disabled=not bbg_ok):
+                cache_bar = st.progress(0, text="Starting cache refresh...")
+                cache_step = st.empty()
+
+                def _on_cache_progress(pct: int, msg: str) -> None:
+                    pct = max(0, min(100, int(pct)))
+                    cache_bar.progress(pct, text=msg)
+                    cache_step.caption(f"Step: {msg}")
+
+                refresh_bloomberg_cache(
+                    repo,
+                    start_date=inception_date,
+                    end_date=today_date,
+                    progress_callback=_on_cache_progress,
+                )
+                cache_bar.progress(100, text="Cache refresh complete")
+                st.success("Bloomberg cache refreshed.")
+                has_cache = True
+        with rc2:
+            st.caption("Use this first to fetch/update benchmark, sector, and portfolio market data. Date-range runs will reuse this cache.")
+
+        run_disabled = not (bbg_ok or has_cache)
+        if run_disabled:
+            st.caption("Run Attribution is disabled: no Bloomberg connection and no local attribution cache found. Refresh cache on a Bloomberg-enabled machine first.")
+        if st.button("Run Attribution", type="primary", disabled=run_disabled):
+            progress_bar = st.progress(0, text="Starting attribution...")
+            step_text = st.empty()
+
+            def _on_progress(pct: int, msg: str) -> None:
                 pct = max(0, min(100, int(pct)))
-                cache_bar.progress(pct, text=msg)
-                cache_step.caption(f"Step: {msg}")
+                progress_bar.progress(pct, text=msg)
+                step_text.caption(f"Step: {msg}")
 
-            refresh_bloomberg_cache(
-                repo,
-                start_date=inception_date,
-                end_date=today_date,
-                progress_callback=_on_cache_progress,
-            )
-            cache_bar.progress(100, text="Cache refresh complete")
-            st.success("Bloomberg cache refreshed.")
-            has_cache = True
-    with rc2:
-        st.caption("Use this first to fetch/update benchmark, sector, and portfolio market data. Date-range runs will reuse this cache.")
+            try:
+                run_attribution_for_window(
+                    repo,
+                    start_date=pd.Timestamp(start),
+                    end_date=pd.Timestamp(end),
+                    lookback_days=None,
+                    progress_callback=_on_progress,
+                )
+                progress_bar.progress(100, text="Attribution complete")
+                st.success("Attribution run complete.")
+            except Exception:
+                progress_bar.progress(100, text="Attribution failed")
+                raise
 
-    run_disabled = not (bbg_ok or has_cache)
-    if run_disabled:
-        st.caption("Run Attribution is disabled: no Bloomberg connection and no local attribution cache found. Refresh cache on a Bloomberg-enabled machine first.")
-    if st.button("Run Attribution", type="primary", disabled=run_disabled):
-        progress_bar = st.progress(0, text="Starting attribution...")
-        step_text = st.empty()
+        summary = _load_if_exists(outputs / "attribution_summary.csv")
+        daily = _load_if_exists(outputs / "attribution_daily.csv")
+        sector = _load_if_exists(outputs / "attribution_by_sector.csv")
+        security = _load_if_exists(outputs / "attribution_by_security.csv")
+        sec_decomp = None
+        if security is not None:
+            try:
+                if daily is not None and not daily.empty and "date" in daily.columns:
+                    d0 = pd.to_datetime(daily["date"]).min().strftime("%Y-%m-%d")
+                    d1 = pd.to_datetime(daily["date"]).max().strftime("%Y-%m-%d")
+                    sec_decomp = _compute_security_decomp(str(repo), d0, d1)
+                else:
+                    sec_decomp = _compute_security_decomp(str(repo), str(start), str(end))
+            except Exception:
+                sec_decomp = security.copy()
+            if sec_decomp is not None and not sec_decomp.empty and "selection_effect" in sec_decomp.columns:
+                sec_decomp = sec_decomp[sec_decomp["selection_effect"].abs() > 1e-12]
+            if sec_decomp is not None and not sec_decomp.empty and "holding_days" in sec_decomp.columns:
+                sec_decomp = sec_decomp[sec_decomp["holding_days"] > 0]
 
-        def _on_progress(pct: int, msg: str) -> None:
-            pct = max(0, min(100, int(pct)))
-            progress_bar.progress(pct, text=msg)
-            step_text.caption(f"Step: {msg}")
-
-        try:
-            run_attribution_for_window(
-                repo,
-                start_date=pd.Timestamp(start),
-                end_date=pd.Timestamp(end),
-                lookback_days=None,
-                progress_callback=_on_progress,
-            )
-            progress_bar.progress(100, text="Attribution complete")
-            st.success("Attribution run complete.")
-        except Exception:
-            progress_bar.progress(100, text="Attribution failed")
-            raise
-
-    summary = _load_if_exists(outputs / "attribution_summary.csv")
-    daily = _load_if_exists(outputs / "attribution_daily.csv")
-    sector = _load_if_exists(outputs / "attribution_by_sector.csv")
-    security = _load_if_exists(outputs / "attribution_by_security.csv")
-    holdings, holdings_totals = _compute_live_holdings(str(repo), str(holdings_as_of))
-    sec_decomp = None
-    if security is not None:
-        try:
-            if daily is not None and not daily.empty and "date" in daily.columns:
-                d0 = pd.to_datetime(daily["date"]).min().strftime("%Y-%m-%d")
-                d1 = pd.to_datetime(daily["date"]).max().strftime("%Y-%m-%d")
-                sec_decomp = _compute_security_decomp(str(repo), d0, d1)
-            else:
-                sec_decomp = _compute_security_decomp(str(repo), str(start), str(end))
-        except Exception:
-            sec_decomp = security.copy()
-        if sec_decomp is not None and not sec_decomp.empty and "selection_effect" in sec_decomp.columns:
-            sec_decomp = sec_decomp[sec_decomp["selection_effect"].abs() > 1e-12]
-        if sec_decomp is not None and not sec_decomp.empty and "holding_days" in sec_decomp.columns:
-            sec_decomp = sec_decomp[sec_decomp["holding_days"] > 0]
-
-    if holdings is not None and not holdings.empty:
-        st.subheader("Live Holdings")
-        h_view = holdings[["ticker", "company", "shares", "first_buy_date", "avg_price", "today_price", "ret_1d", "ret_1w", "ret_1m", "market_value", "cost_basis", "weight", "pnl_dollar", "pnl_pct", "irr"]].copy()
-        h_view["first_buy_date"] = pd.to_datetime(h_view["first_buy_date"], errors="coerce")
-        for col in ["ret_1d", "ret_1w", "ret_1m", "weight", "pnl_pct", "irr"]:
-            h_view[col] = h_view[col] * 100.0
-        st.dataframe(
-            h_view,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "ticker": "Ticker",
-                "company": "Company",
-                "shares": st.column_config.NumberColumn("Shares", format="%.2f"),
-                "first_buy_date": st.column_config.DateColumn("First Buy"),
-                "avg_price": st.column_config.NumberColumn("Avg Price", format="$%.2f"),
-                "today_price": st.column_config.NumberColumn("Today Price", format="$%.2f"),
-                "ret_1d": st.column_config.NumberColumn("1D", format="%.2f%%"),
-                "ret_1w": st.column_config.NumberColumn("1W", format="%.2f%%"),
-                "ret_1m": st.column_config.NumberColumn("1M", format="%.2f%%"),
-                "market_value": st.column_config.NumberColumn("Market Value", format="$%.0f"),
-                "cost_basis": st.column_config.NumberColumn("Cost Basis", format="$%.0f"),
-                "weight": st.column_config.NumberColumn("Weight", format="%.2f%%"),
-                "pnl_dollar": st.column_config.NumberColumn("PnL ($)", format="$%.0f"),
-                "pnl_pct": st.column_config.NumberColumn("PnL (%)", format="%.2f%%"),
-                "irr": st.column_config.NumberColumn("IRR", format="%.2f%%"),
-            },
-        )
-        total_pnl_pct = holdings_totals.get("pnl_pct")
-        tc1, tc2, tc3, tc4 = st.columns(4)
-        tc1.metric("Total Market Value", f"${float(holdings_totals.get('market_value') or 0.0):,.0f}")
-        tc2.metric("Total Cost Basis", f"${float(holdings_totals.get('cost_basis') or 0.0):,.0f}")
-        tc3.metric("Total PnL ($)", f"${float(holdings_totals.get('pnl_dollar') or 0.0):,.0f}")
-        tc4.metric("Total PnL (%)", f"{float(total_pnl_pct) * 100.0:,.2f}%" if total_pnl_pct is not None else "N/A")
-
-        st.subheader("Upcoming Earnings")
-        earnings_tickers = tuple(
-            sorted(
-                holdings.loc[
-                    (holdings["ticker"] != "CASH") & (holdings["shares"].fillna(0) > 0),
-                    "ticker",
-                ]
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
-            )
-        )
-        earnings = _compute_upcoming_earnings(str(repo), str(holdings_as_of), earnings_tickers)
-        if earnings.empty:
-            if bbg_ok:
-                st.caption("No upcoming earnings found for current holdings.")
-            else:
-                st.caption("Upcoming earnings requires Bloomberg connectivity in this runtime.")
-        else:
+        if summary is not None:
+            st.subheader("Summary")
+            summary_scaled = _scaled_percent_like(summary, unit, skip_cols={"metric"})
             st.dataframe(
-                earnings,
+                summary_scaled,
                 use_container_width=True,
                 hide_index=True,
-                column_config={
-                    "ticker": "Ticker",
-                    "company": "Company",
-                    "report_date": st.column_config.DateColumn("Earnings Date"),
-                    "days_until": st.column_config.NumberColumn("Days Until", format="%d"),
-                    "session": "Session",
-                    "time_note": "Time Detail",
-                },
+                column_config=_effect_number_config(summary_scaled, unit, skip_cols={"metric"}),
             )
 
-    if summary is not None:
-        st.subheader("Summary")
-        summary_scaled = _scaled_percent_like(summary, unit, skip_cols={"metric"})
-        st.dataframe(
-            summary_scaled,
-            use_container_width=True,
-            hide_index=True,
-            column_config=_effect_number_config(summary_scaled, unit, skip_cols={"metric"}),
-        )
-
-    if sector is not None:
-        st.subheader("Sector Out/Underperformance")
-        sv = sector.copy()
-        sv = sv[sv["sector"].astype(str).str.strip().str.lower() != "cash"].copy()
-        unknown_in_sector = sv["sector"].astype(str).str.strip().str.lower() == "unknown"
-        if unknown_in_sector.any() and sec_decomp is not None and not sec_decomp.empty:
-            unknown_symbols = (
-                sec_decomp[sec_decomp["sector"].astype(str).str.strip().str.lower() == "unknown"]["symbol"]
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
+        if sector is not None:
+            st.subheader("Sector Out/Underperformance")
+            sv = sector.copy()
+            sv = sv[sv["sector"].astype(str).str.strip().str.lower() != "cash"].copy()
+            unknown_in_sector = sv["sector"].astype(str).str.strip().str.lower() == "unknown"
+            if unknown_in_sector.any() and sec_decomp is not None and not sec_decomp.empty:
+                unknown_symbols = (
+                    sec_decomp[sec_decomp["sector"].astype(str).str.strip().str.lower() == "unknown"]["symbol"]
+                    .dropna()
+                    .astype(str)
+                    .unique()
+                    .tolist()
+                )
+                if unknown_symbols:
+                    st.caption(f"Unknown sector currently contains: {', '.join(unknown_symbols)}")
+            sv["status"] = sv["total_effect"].map(lambda x: "Outperforming" if x > 0 else "Underperforming")
+            sv["dominant_driver"] = sv.apply(
+                lambda r: "Security Selection" if abs(r["select_effect"]) >= abs(r["alloc_effect"]) else "Asset Allocation",
+                axis=1,
             )
-            if unknown_symbols:
-                st.caption(f"Unknown sector currently contains: {', '.join(unknown_symbols)}")
-        sv["status"] = sv["total_effect"].map(lambda x: "Outperforming" if x > 0 else "Underperforming")
-        sv["dominant_driver"] = sv.apply(
-            lambda r: "Security Selection" if abs(r["select_effect"]) >= abs(r["alloc_effect"]) else "Asset Allocation",
-            axis=1,
-        )
-        sv = sv.sort_values("total_effect", ascending=False)
-        sv_view = sv[["sector", "status", "dominant_driver", "alloc_effect", "select_effect", "total_effect"]]
-        sv_scaled = _scaled_percent_like(sv_view, unit, skip_cols={"sector", "status", "dominant_driver"})
-        st.dataframe(
-            sv_scaled,
-            use_container_width=True,
-            hide_index=True,
-            column_config=_effect_number_config(sv_scaled, unit, skip_cols={"sector", "status", "dominant_driver"}),
-        )
-        chart_df = sv.set_index("sector")[["alloc_effect", "select_effect", "total_effect"]]
-        st.bar_chart(chart_df)
-        if sec_decomp is not None and not sec_decomp.empty:
-            st.caption("Selection effect by sector (expand to view constituents).")
-            sec_group = (
-                sec_decomp.groupby("sector", as_index=False)
-                .agg(sector_selection_effect=("selection_effect", "sum"), count=("symbol", "count"))
-                .sort_values("sector_selection_effect", ascending=False)
+            sv = sv.sort_values("total_effect", ascending=False)
+            sv_view = sv[["sector", "status", "dominant_driver", "alloc_effect", "select_effect", "total_effect"]]
+            sv_scaled = _scaled_percent_like(sv_view, unit, skip_cols={"sector", "status", "dominant_driver"})
+            st.dataframe(
+                sv_scaled,
+                use_container_width=True,
+                hide_index=True,
+                column_config=_effect_number_config(sv_scaled, unit, skip_cols={"sector", "status", "dominant_driver"}),
             )
-            unit_scale = 100.0 if unit == "%" else 10000.0
-            unit_suffix = "%" if unit == "%" else "bps"
-            for _, g in sec_group.iterrows():
-                sector_name = str(g["sector"])
-                with st.expander(sector_name, expanded=False):
-                    st.caption(
-                        f"Selection Effect: {float(g['sector_selection_effect']) * unit_scale:,.2f} {unit_suffix}  |  Names: {int(g['count'])}"
-                    )
-                    sub = sec_decomp[sec_decomp["sector"] == sector_name].copy().sort_values("selection_effect", ascending=False)
-                    sub_scaled = _scaled_percent_like(sub, unit, skip_cols={"symbol", "sector", "holding_days"})
-                    st.dataframe(
-                        sub_scaled,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config=_effect_number_config(sub_scaled, unit, skip_cols={"symbol", "sector", "holding_days"}),
-                    )
+            chart_df = sv.set_index("sector")[["alloc_effect", "select_effect", "total_effect"]]
+            st.bar_chart(chart_df)
+            if sec_decomp is not None and not sec_decomp.empty:
+                st.caption("Selection effect by sector (expand to view constituents).")
+                sec_group = (
+                    sec_decomp.groupby("sector", as_index=False)
+                    .agg(sector_selection_effect=("selection_effect", "sum"), count=("symbol", "count"))
+                    .sort_values("sector_selection_effect", ascending=False)
+                )
+                unit_scale = 100.0 if unit == "%" else 10000.0
+                unit_suffix = "%" if unit == "%" else "bps"
+                for _, g in sec_group.iterrows():
+                    sector_name = str(g["sector"])
+                    with st.expander(sector_name, expanded=False):
+                        st.caption(
+                            f"Selection Effect: {float(g['sector_selection_effect']) * unit_scale:,.2f} {unit_suffix}  |  Names: {int(g['count'])}"
+                        )
+                        sub = sec_decomp[sec_decomp["sector"] == sector_name].copy().sort_values("selection_effect", ascending=False)
+                        sub_scaled = _scaled_percent_like(sub, unit, skip_cols={"symbol", "sector", "holding_days"})
+                        st.dataframe(
+                            sub_scaled,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config=_effect_number_config(sub_scaled, unit, skip_cols={"symbol", "sector", "holding_days"}),
+                        )
 
-    if security is not None:
-        st.subheader("Top Security Selection")
-        sec = sec_decomp.copy() if sec_decomp is not None else pd.DataFrame()
-        cols = ["symbol", "sector", "selection_effect", "avg_weight", "local_return", "holding_days"]
-        sec = sec[[c for c in cols if c in sec.columns]].sort_values("selection_effect", ascending=False)
-        sec_view = sec.head(50).copy()
-        sec_scaled = _scaled_percent_like(sec_view, unit, skip_cols={"symbol", "sector", "holding_days"})
-        st.dataframe(
-            sec_scaled,
-            use_container_width=True,
-            hide_index=True,
-            column_config=_effect_number_config(sec_scaled, unit, skip_cols={"symbol", "sector", "holding_days"}),
-        )
+        if security is not None:
+            st.subheader("Top Security Selection")
+            sec = sec_decomp.copy() if sec_decomp is not None else pd.DataFrame()
+            cols = ["symbol", "sector", "selection_effect", "avg_weight", "local_return", "holding_days"]
+            sec = sec[[c for c in cols if c in sec.columns]].sort_values("selection_effect", ascending=False)
+            sec_view = sec.head(50).copy()
+            sec_scaled = _scaled_percent_like(sec_view, unit, skip_cols={"symbol", "sector", "holding_days"})
+            st.dataframe(
+                sec_scaled,
+                use_container_width=True,
+                hide_index=True,
+                column_config=_effect_number_config(sec_scaled, unit, skip_cols={"symbol", "sector", "holding_days"}),
+            )
 
-    p2 = outputs / "attribution_cum_effects.png"
-    if p2.exists():
-        st.subheader("Cumulative Effects")
-        st.image(str(p2))
+        p2 = outputs / "attribution_cum_effects.png"
+        if p2.exists():
+            st.subheader("Cumulative Effects")
+            st.image(str(p2))
 
 
 if __name__ == "__main__":

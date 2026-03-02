@@ -1,31 +1,31 @@
 symbol,sector,selection_effect
+NATL,Financials,0.013416800763475296
 AIR,Industrials,0.0104886506865158
-NATL,Financials,0.009774396435802676
-INVA,Health Care,0.007801993318352979
-GTES,Industrials,0.006169981292971972
-MTRN,Materials,0.006095819645430844
-MYRG,Industrials,0.005803054367340013
-CRGY,Energy,0.00567467196432405
-CTRE,Real Estate,0.003366245535049512
-PRDO,Consumer Discretionary,0.0029775284300780133
+INVA,Health Care,0.007948376371562286
+MTRN,Materials,0.007847289976726433
+CRGY,Energy,0.006846087374751373
+VIAV,Information Technology,0.00613115502081626
+MYRG,Industrials,0.005223229672005142
+GTES,Industrials,0.005156023450078797
+PRDO,Consumer Discretionary,0.0037160646098018625
+CTRE,Real Estate,0.0037082419224421016
+FSS,Industrials,0.0030869623892049187
 LUMN,Communication Services,0.0018924884279565611
-FSS,Industrials,0.00155428938895406
-VIAV,Information Technology,0.00016903204420834229
-ATKR,Industrials,0.0
-AUD,Communication Services,0.0
+AX,Financials,0.00015182931301344386
+UNFI,Consumer Staples,0.00012990391171552128
 AVNT,Materials,0.0
-AWR,Utilities,0.0
-ATSG,Industrials,0.0
-ARES,Financials,0.0
+AUD,Communication Services,0.0
 ASGN,Information Technology,0.0
+APOG,Industrials,0.0
+ARES,Financials,0.0
+ATKR,Industrials,0.0
 ABCB,Financials,0.0
-ADUS,Health Care,0.0
 AMCX,Communication Services,0.0
 AMN,Health Care,0.0
 AGX,Industrials,0.0
-AMBA,Information Technology,0.0
+ADUS,Health Care,0.0
 CSV,Consumer Discretionary,0.0
-CSW,Industrials,0.0
+BTE,Energy,0.0
 CARS,Communication Services,0.0
 CALY,Consumer Discretionary,0.0
 CCF,Materials,0.0
@@ -41,35 +41,35 @@ COLL,Health Care,0.0
 CRVL,Health Care,0.0
 CBNK,Financials,0.0
 EBS,Health Care,0.0
-DORM,Consumer Discretionary,0.0
+CSW,Industrials,0.0
 CTBI,Financials,0.0
 CTLT,Health Care,0.0
 CVSA,Consumer Discretionary,0.0
 DCO,Industrials,0.0
-DGII,Information Technology,0.0
+AWR,Utilities,0.0
+ATSG,Industrials,0.0
+BEAT,Health Care,0.0
 AZTA,Health Care,0.0
-BRBR,Consumer Staples,0.0
 BAND,Communication Services,0.0
 BCML,Financials,0.0
-BEAT,Health Care,0.0
-BTE,Energy,0.0
+BRBR,Consumer Staples,0.0
 BJ,Consumer Staples,0.0
 AMPH,Health Care,0.0
-APOG,Industrials,0.0
+AMBA,Information Technology,0.0
 YETI,Consumer Discretionary,0.0
 OEC,Materials,0.0
-ORA,Utilities,0.0
+ECPG,Financials,0.0
 ENSG,Health Care,0.0
 DY,Industrials,0.0
 DV,Communication Services,0.0
-ECPG,Financials,0.0
+DORM,Consumer Discretionary,0.0
 ELF,Consumer Staples,0.0
 DHIL,Financials,0.0
-GIC,Industrials,0.0
+DGII,Information Technology,0.0
 FUN,Consumer Discretionary,0.0
 GMED,Health Care,0.0
 EYE,Consumer Discretionary,0.0
-FIZZ,Consumer Staples,0.0
+GIC,Industrials,0.0
 GLDD,Industrials,0.0
 ENVA,Financials,0.0
 GOOD,Real Estate,0.0
@@ -85,7 +85,7 @@ HWKN,Materials,0.0
 IMAX,Communication Services,0.0
 IIPR,Real Estate,0.0
 GMS,Industrials,0.0
-GOGO,Communication Services,0.0
+FIZZ,Consumer Staples,0.0
 EVRI,Consumer Discretionary,0.0
 EPRT,Real Estate,0.0
 IWM,Funds,0.0
@@ -117,16 +117,16 @@ NMRK,Real Estate,0.0
 NVEC,Information Technology,0.0
 NVEE,Industrials,0.0
 NXST,Communication Services,0.0
-NWE,Utilities,0.0
+GOGO,Communication Services,0.0
 FLXS,Consumer Discretionary,0.0
 FONR,Health Care,0.0
 ZD,Communication Services,0.0
 WLDN,Industrials,0.0
-WSFS,Financials,0.0
+NWE,Utilities,0.0
 OGS,Utilities,0.0
 OXM,Consumer Discretionary,0.0
 PAYO,Financials,0.0
-PBH,Health Care,0.0
+ORA,Utilities,0.0
 OPK,Health Care,0.0
 PENG,Information Technology,0.0
 PGNY,Health Care,0.0
@@ -134,7 +134,7 @@ PLNT,Consumer Discretionary,0.0
 PLAY,Consumer Discretionary,0.0
 PRFT,Information Technology,0.0
 POR,Utilities,0.0
-PRGS,Information Technology,0.0
+PBH,Health Care,0.0
 OTTR,Utilities,0.0
 SLQT,Financials,0.0
 RGEN,Health Care,0.0
@@ -150,37 +150,37 @@ SEE,Materials,0.0
 SLAB,Information Technology,0.0
 SSD,Industrials,0.0
 STRA,Consumer Discretionary,0.0
-SSTK,Communication Services,0.0
+PRGS,Information Technology,0.0
 QLYS,Information Technology,0.0
-WTBA,Financials,0.0
-ZAGG,Consumer Discretionary,0.0
 ZUMZ,Consumer Discretionary,0.0
-STAG,Real Estate,0.0
+ZAGG,Consumer Discretionary,0.0
+UVE,Financials,0.0
+SSTK,Communication Services,0.0
 TECD,Information Technology,0.0
 TGNA,Communication Services,0.0
 TH,Consumer Discretionary,0.0
-SUPN,Health Care,0.0
-TTEC,Industrials,0.0
-TREX,Industrials,0.0
-TRHC,Health Care,0.0
+STAG,Real Estate,0.0
 TROX,Materials,0.0
-TWNK,Consumer Staples,0.0
-UVE,Financials,0.0
-UNTY,Financials,0.0
 THR,Industrials,0.0
-VRNT,Information Technology,0.0
+TRHC,Health Care,0.0
+TREX,Industrials,0.0
+TWNK,Consumer Staples,0.0
+TTEC,Industrials,0.0
+UNTY,Financials,0.0
+SUPN,Health Care,0.0
+WTBA,Financials,0.0
 VNDA,Health Care,0.0
-VSH,Information Technology,0.0
+WSFS,Financials,0.0
 UPLD,Information Technology,0.0
+VRNT,Information Technology,0.0
 WASH,Financials,0.0
-UNFI,Consumer Staples,-0.00011698028598767569
-TDS,Communication Services,-0.0002848132119430219
-AX,Financials,-0.0002955998778526314
-UFPT,Health Care,-0.0003507359264028197
-AVA,Utilities,-0.000427059670798322
-MCRI,Consumer Discretionary,-0.0029725990776901406
-CVCO,Consumer Discretionary,-0.0031402519344792034
-VECO,Information Technology,-0.003192333448750834
-RAMP,Information Technology,-0.003546757899647457
-PFBC,Financials,-0.005527827753982917
+VSH,Information Technology,0.0
+TDS,Communication Services,-0.0005028615415464257
+AVA,Utilities,-0.0007904973424134677
+UFPT,Health Care,-0.0011237136359254773
+MCRI,Consumer Discretionary,-0.002329483826550762
+VECO,Information Technology,-0.0023535251494113878
+RAMP,Information Technology,-0.0029567594218734413
+CVCO,Consumer Discretionary,-0.0032227827202236576
+PFBC,Financials,-0.005159266135175987
 QRVO,Information Technology,-0.00571113093414559

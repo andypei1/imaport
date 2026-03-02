@@ -31,7 +31,7 @@ import sys
 print(f"python_executable={sys.executable}")
 print(f"python_version={sys.version.split()[0]}")
 
-mods = ["pandas", "matplotlib", "streamlit"]
+mods = ["pandas", "matplotlib", "streamlit", "yfinance"]
 optional = ["blpapi"]
 failed = False
 

@@ -121,6 +121,8 @@ What this does:
 
 - Finds a working Python interpreter (`py -3.12`, then `py`, then `python`)
 - Installs repo dependencies from `requirements.txt` into your user site-packages (`--user`)
+- Always attempts to install Bloomberg `blpapi` when missing (auto + local wheel fallback)
+- If `blpapi` still fails, follow `docs/BLPAPI_SETUP.md`
 
 Then run:
 
