@@ -1,26 +1,36 @@
 """
-Fetch raw (unadjusted) close prices via yfinance for NAV valuation.
-Using unadjusted close with actual share counts gives correct value across stock splits.
-Supports symbol aliases (e.g. MOG A -> MOG.A) and manual/delisted price file.
-When no market price exists (e.g. delisted), uses last trade price (entry or sale) as fallback.
+Fetch close prices via Bloomberg Desktop API (blpapi) for NAV valuation.
+Supports symbol aliases and manual fallback prices for exceptional cases.
+When Bloomberg/manual still has gaps, uses last trade price fallback.
 """
 
 from pathlib import Path
 from typing import Optional
 
+import blpapi
 import pandas as pd
-import yfinance as yf
 
 
 def _load_symbol_aliases(path: Optional[Path]) -> dict[str, str]:
-    """Load symbol -> yfinance_ticker map from CSV. Columns: symbol, yfinance_ticker."""
+    """
+    Load symbol -> Bloomberg security map from CSV.
+    Preferred columns: symbol, bloomberg_ticker
+    Backward compatible columns: symbol, yfinance_ticker
+    """
     if path is None or not Path(path).exists():
         return {}
     df = pd.read_csv(path)
     df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
-    if "symbol" not in df.columns or "yfinance_ticker" not in df.columns:
+    if "symbol" not in df.columns:
         return {}
-    return df.set_index("symbol")["yfinance_ticker"].astype(str).to_dict()
+    ticker_col = None
+    if "bloomberg_ticker" in df.columns:
+        ticker_col = "bloomberg_ticker"
+    elif "yfinance_ticker" in df.columns:
+        ticker_col = "yfinance_ticker"
+    if ticker_col is None:
+        return {}
+    return df.set_index("symbol")[ticker_col].astype(str).to_dict()
 
 
 def _build_last_trade_price_fallback(
@@ -31,7 +41,7 @@ def _build_last_trade_price_fallback(
 ) -> pd.DataFrame:
     """
     For each (date, symbol) in range, compute price = last trade (buy or sale) on or before that date.
-    Used when yfinance/manual have no data (e.g. delisted). Sales update the price for NAV.
+    Used when Bloomberg/manual have no data (e.g. delisted). Sales update the price for NAV.
     """
     if trades_df.empty or "trade_date" not in trades_df.columns or "symbol" not in trades_df.columns or "price" not in trades_df.columns:
         return pd.DataFrame(columns=["date", "symbol", "price"])
@@ -63,6 +73,97 @@ def _build_last_trade_price_fallback(
     return out
 
 
+def _fetch_bloomberg_prices(
+    symbol_to_security: dict[str, str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    host: str = "localhost",
+    port: int = 8194,
+) -> pd.DataFrame:
+    """
+    Fetch Bloomberg daily PX_LAST using HistoricalDataRequest.
+    Returns DataFrame(date, symbol, price). Symbols with no data are omitted.
+    """
+    if not symbol_to_security:
+        return pd.DataFrame(columns=["date", "symbol", "price"])
+
+    session_options = blpapi.SessionOptions()
+    session_options.setServerHost(host)
+    session_options.setServerPort(port)
+    session = blpapi.Session(session_options)
+
+    if not session.start():
+        raise RuntimeError(f"Failed to start Bloomberg session at {host}:{port}")
+    if not session.openService("//blp/refdata"):
+        session.stop()
+        raise RuntimeError("Failed to open Bloomberg service //blp/refdata")
+
+    service = session.getService("//blp/refdata")
+    request = service.createRequest("HistoricalDataRequest")
+    for sec in dict.fromkeys(symbol_to_security.values()):
+        request.getElement("securities").appendValue(sec)
+    request.getElement("fields").appendValue("PX_LAST")
+    request.set("startDate", start.strftime("%Y%m%d"))
+    request.set("endDate", end.strftime("%Y%m%d"))
+    request.set("periodicitySelection", "DAILY")
+
+    session.sendRequest(request)
+
+    sec_to_symbols: dict[str, list[str]] = {}
+    for sym, sec in symbol_to_security.items():
+        sec_to_symbols.setdefault(sec, []).append(sym)
+
+    rows: list[dict] = []
+    done = False
+    while not done:
+        event = session.nextEvent()
+        for message in event:
+            if message.messageType() != blpapi.Name("HistoricalDataResponse"):
+                continue
+            security_data = message.getElement("securityData")
+            security = security_data.getElementAsString("security")
+            if security_data.hasElement("securityError"):
+                continue
+            if not security_data.hasElement("fieldData"):
+                continue
+            field_data = security_data.getElement("fieldData")
+            for i in range(field_data.numValues()):
+                item = field_data.getValueAsElement(i)
+                if not item.hasElement("date") or not item.hasElement("PX_LAST"):
+                    continue
+                date_value = pd.to_datetime(item.getElementAsDatetime("date")).normalize()
+                price_value = float(item.getElementAsFloat("PX_LAST"))
+                for symbol in sec_to_symbols.get(security, [security]):
+                    rows.append({"date": date_value, "symbol": symbol, "price": price_value})
+        if event.eventType() == blpapi.Event.RESPONSE:
+            done = True
+
+    session.stop()
+    if not rows:
+        return pd.DataFrame(columns=["date", "symbol", "price"])
+    out = pd.DataFrame(rows)
+    out["date"] = pd.to_datetime(out["date"]).dt.normalize()
+    return out.sort_values(["date", "symbol"]).reset_index(drop=True)
+
+
+def get_latest_market_date(
+    probe_security: str = "SML Index",
+    lookback_days: int = 14,
+    host: str = "localhost",
+    port: int = 8194,
+) -> Optional[pd.Timestamp]:
+    """
+    Return latest available trading date from Bloomberg for a probe security.
+    Returns None if no data is available.
+    """
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.Timedelta(days=lookback_days)
+    probe = _fetch_bloomberg_prices({"_probe_": probe_security}, start, end, host=host, port=port)
+    if probe.empty:
+        return None
+    return pd.to_datetime(probe["date"]).max().normalize()
+
+
 def get_prices(
     symbols: list[str],
     start: pd.Timestamp,
@@ -72,12 +173,10 @@ def get_prices(
     trades_for_fallback: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
-    Download raw (unadjusted) close prices for the given symbols and date range.
-    Unadjusted close ensures NAV = actual_shares x actual_price on each date (correct across splits).
-    Uses alias_path to map BlackDiamond symbols to yfinance tickers; output keeps original symbols.
+    Download close prices for the given symbols and date range from Bloomberg.
+    Uses alias_path to map BlackDiamond symbols to Bloomberg securities; output keeps original symbols.
     Fills missing (date, symbol) from manual_prices_path if provided.
-    When still missing (e.g. delisted), uses last trade price (entry or sale) as fallback so
-    price is unchanged until we have a sale; sales update the price for NAV.
+    When still missing, uses last trade price fallback so price is unchanged until a sale updates it.
 
     Returns:
         DataFrame with columns: date, symbol, price.
@@ -86,51 +185,11 @@ def get_prices(
         return pd.DataFrame(columns=["date", "symbol", "price"])
 
     aliases = _load_symbol_aliases(alias_path)
-    symbol_to_yf = {s: aliases.get(s, s) for s in symbols}
-    yf_tickers = list(dict.fromkeys(symbol_to_yf.values()))
-
-    start_str = start.strftime("%Y-%m-%d")
-    end_str = end.strftime("%Y-%m-%d")
-    raw = yf.download(
-        yf_tickers,
-        start=start_str,
-        end=end_str,
-        auto_adjust=False,
-        group_by="ticker",
-        progress=False,
-        threads=False,
-    )
-    if raw.empty:
-        out = pd.DataFrame(columns=["date", "symbol", "price"])
-    else:
-        if len(yf_tickers) == 1:
-            yf_sym = yf_tickers[0]
-            close = raw["Close"].copy() if "Close" in raw.columns else raw.iloc[:, 3]
-            out = close.reset_index()
-            out.columns = ["date", "price"]
-            out["symbol"] = [s for s in symbols if symbol_to_yf[s] == yf_sym][0]
-        else:
-            if isinstance(raw.columns, pd.MultiIndex):
-                close_df = raw.xs("Close", axis=1, level=1)
-            else:
-                close_df = raw[[c for c in raw.columns if "Close" in str(c)]].copy()
-                close_df.columns = [c.replace(".Close", "") for c in close_df.columns]
-            close_df = close_df.reset_index()
-            close_df = close_df.rename(columns={close_df.columns[0]: "date"})
-            long = close_df.melt(id_vars=["date"], var_name="yf_ticker", value_name="price")
-            long = long.dropna(subset=["price"])
-            yf_to_originals = {}
-            for orig, yf_tick in symbol_to_yf.items():
-                yf_to_originals.setdefault(yf_tick, []).append(orig)
-            rows = []
-            for _, r in long.iterrows():
-                for orig in yf_to_originals.get(r["yf_ticker"], [r["yf_ticker"]]):
-                    rows.append({"date": r["date"], "symbol": orig, "price": r["price"]})
-            out = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["date", "symbol", "price"])
-
-        if not out.empty:
-            out["date"] = pd.to_datetime(out["date"]).dt.normalize()
-            out = out.dropna(subset=["price"])
+    symbol_to_security = {s: aliases.get(s, f"{s} US Equity") for s in symbols}
+    out = _fetch_bloomberg_prices(symbol_to_security, start, end)
+    if not out.empty:
+        out["date"] = pd.to_datetime(out["date"]).dt.normalize()
+        out = out.dropna(subset=["price"])
 
     # Merge manual prices (delisted / user-provided): fill or overwrite (date, symbol).
     if manual_prices_path is not None and Path(manual_prices_path).exists():
@@ -147,7 +206,7 @@ def get_prices(
                 out = out.drop_duplicates(subset=["date", "symbol"], keep="last")
                 out = out.sort_values(["date", "symbol"]).reset_index(drop=True)
 
-    # Fallback: where we still have no price, use last trade price (entry or sale) so price doesn't change until we sell.
+    # Fallback: where we still have no price, use last trade price so price doesn't change until we sell.
     if trades_for_fallback is not None and not trades_for_fallback.empty:
         fallback = _build_last_trade_price_fallback(trades_for_fallback, symbols, start, end)
         if not fallback.empty:

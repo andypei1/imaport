@@ -5,14 +5,48 @@ Entry script: load transactions -> positions -> cash -> prices -> NAV -> returns
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 # Allow running from repo root without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.portfolio.load_transactions import load_transactions
 from src.portfolio.positions import build_positions
 from src.portfolio.cash import build_cash_ledger
-from src.portfolio.prices import get_prices
+from src.portfolio.prices import get_prices, get_latest_market_date
 from src.portfolio.nav import compute_daily_nav
+
+
+def _extend_positions_and_cash_to_date(positions_df, cash_df, target_date):
+    """Carry positions and cash forward through target_date (zero external flow on added days)."""
+    positions_df = positions_df.copy()
+    cash_df = cash_df.copy()
+    positions_df["date"] = positions_df["date"].astype("datetime64[ns]")
+    cash_df["date"] = cash_df["date"].astype("datetime64[ns]")
+
+    # Extend positions by symbol.
+    if not positions_df.empty:
+        pos_max = positions_df["date"].max()
+        if target_date > pos_max:
+            extra_dates = pd.date_range(pos_max + pd.Timedelta(days=1), target_date, freq="D")
+            last_by_symbol = positions_df.sort_values("date").groupby("symbol", as_index=False).tail(1)
+            rows = []
+            for d in extra_dates:
+                for _, r in last_by_symbol.iterrows():
+                    rows.append({"date": d, "symbol": r["symbol"], "shares": float(r["shares"])})
+            if rows:
+                positions_df = pd.concat([positions_df, pd.DataFrame(rows)], ignore_index=True)
+
+    # Extend cash ledger.
+    if not cash_df.empty:
+        cash_max = cash_df["date"].max()
+        if target_date > cash_max:
+            extra_dates = pd.date_range(cash_max + pd.Timedelta(days=1), target_date, freq="D")
+            last_cash = float(cash_df.sort_values("date")["cash_balance"].iloc[-1])
+            extra = pd.DataFrame({"date": extra_dates, "cash_balance": last_cash, "external_flow": 0.0})
+            cash_df = pd.concat([cash_df, extra], ignore_index=True)
+
+    return positions_df, cash_df
 
 
 def main() -> None:
@@ -50,9 +84,14 @@ def main() -> None:
     # 3. Build cash ledger
     cash_df = build_cash_ledger(trades_df, cashflows_df)
 
-    # 4. Fetch prices for date range
+    # 4. Fetch prices for date range (extend to latest market date if available)
     date_min = cash_df["date"].min()
     date_max = cash_df["date"].max()
+    market_max = get_latest_market_date()
+    if market_max is not None and market_max > date_max:
+        date_max = market_max
+        positions_df, cash_df = _extend_positions_and_cash_to_date(positions_df, cash_df, date_max)
+
     symbols = positions_df["symbol"].unique().tolist()
     inputs_dir = repo / "inputs"
     alias_path = inputs_dir / "symbol_aliases.csv" if inputs_dir.exists() else None

@@ -19,13 +19,38 @@ def compute_daily_nav(
     Positions and prices are joined on (date, symbol). Cash is joined on date.
     Returns DataFrame with: date, nav, securities_value, cash_balance, daily_return, external_flow.
     """
+    cash_df = cash_df.copy()
+    cash_df["date"] = pd.to_datetime(cash_df["date"]).dt.normalize()
+    cash_df = cash_df.sort_values("date").reset_index(drop=True)
+
+    # Use trading calendar from observed price dates; fallback to business days.
+    if prices_df.empty:
+        trading_dates = pd.date_range(cash_df["date"].min(), cash_df["date"].max(), freq="B")
+    else:
+        px_dates = pd.to_datetime(prices_df["date"]).dt.normalize().drop_duplicates().sort_values()
+        px_dates = px_dates[px_dates.dt.weekday < 5]
+        trading_dates = pd.DatetimeIndex(
+            [d for d in px_dates if cash_df["date"].min() <= d <= cash_df["date"].max()]
+        )
+        if trading_dates.empty:
+            trading_dates = pd.date_range(cash_df["date"].min(), cash_df["date"].max(), freq="B")
+
     if positions_df.empty or prices_df.empty:
-        # No positions: NAV = cash only.
-        cash_df = cash_df.copy()
-        cash_df["nav"] = cash_df["cash_balance"]
-        cash_df["securities_value"] = 0.0
-        cash_df["daily_return"] = float("nan")
-        return cash_df[["date", "nav", "securities_value", "cash_balance", "daily_return", "external_flow"]]
+        # No positions: NAV = cash only, sampled on trading days.
+        cash_td = (
+            cash_df.set_index("date")
+            .reindex(trading_dates)
+            .ffill()
+            .reset_index()
+            .rename(columns={"index": "date"})
+        )
+        cash_td["external_cum"] = cash_td["external_flow"].fillna(0).cumsum()
+        cash_td["external_prev"] = cash_td["external_cum"].shift(1).fillna(0)
+        cash_td["external_flow"] = cash_td["external_cum"] - cash_td["external_prev"]
+        cash_td["nav"] = cash_td["cash_balance"]
+        cash_td["securities_value"] = 0.0
+        cash_td["daily_return"] = float("nan")
+        return cash_td[["date", "nav", "securities_value", "cash_balance", "daily_return", "external_flow"]]
 
     # Value positions at latest available price (forward-fill; no look-ahead).
     pos = positions_df.copy()
@@ -33,8 +58,8 @@ def compute_daily_nav(
     prices_df = prices_df.copy()
     prices_df["date"] = pd.to_datetime(prices_df["date"]).dt.normalize()
 
-    # Pivot prices to (date x symbol), then reindex to full date range and ffill per symbol.
-    all_dates = pd.date_range(pos["date"].min(), pos["date"].max(), freq="D")
+    # Pivot prices to (date x symbol), then reindex to trading dates and ffill per symbol.
+    all_dates = trading_dates
     price_pivot = prices_df.pivot_table(index="date", columns="symbol", values="price")
     price_pivot = price_pivot.reindex(all_dates).ffill()
     price_pivot = price_pivot.reset_index()
@@ -50,10 +75,27 @@ def compute_daily_nav(
     # Daily securities value = sum of market_value per date.
     securities_value = merged.groupby("date", as_index=False)["market_value"].sum()
 
-    # Align with cash: full date range from cash ledger.
-    cash_df = cash_df.copy()
-    cash_df["date"] = pd.to_datetime(cash_df["date"]).dt.normalize()
-    nav_df = cash_df[["date", "cash_balance", "external_flow"]].merge(
+    # Align with cash on trading dates. Aggregate non-trading-day flows into next trading date.
+    cash_td = (
+        cash_df.set_index("date")
+        .reindex(trading_dates)
+        .ffill()
+        .reset_index()
+        .rename(columns={"index": "date"})
+    )
+    cash_daily = cash_df[["date", "external_flow"]].copy()
+    cash_daily["external_flow"] = cash_daily["external_flow"].fillna(0.0)
+    cash_daily["external_cum"] = cash_daily["external_flow"].cumsum()
+    ext_cum = cash_daily.set_index("date")["external_cum"]
+    ext_at_t = ext_cum.reindex(trading_dates, method="ffill").fillna(0.0)
+    prev_dates = pd.Series(trading_dates).shift(1)
+    ext_prev = ext_cum.reindex(pd.DatetimeIndex(prev_dates.dropna()), method="ffill").fillna(0.0)
+    ext_prev.index = prev_dates.dropna().index
+    ext_prev_full = pd.Series(0.0, index=pd.RangeIndex(len(trading_dates)))
+    ext_prev_full.loc[ext_prev.index] = ext_prev.values
+    cash_td["external_flow"] = (ext_at_t.values - ext_prev_full.values)
+
+    nav_df = cash_td[["date", "cash_balance", "external_flow"]].merge(
         securities_value.rename(columns={"market_value": "securities_value"}),
         on="date",
         how="left",
