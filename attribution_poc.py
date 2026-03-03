@@ -57,6 +57,14 @@ SML_SECTOR_INDEX_MAP: dict[str, str] = {
     "Real Estate": "S6RLST Index",
     "Utilities": "S6UTIL Index",
 }
+OTHER_SECTOR = "Other"
+
+
+def _normalize_sector_name(value: object) -> str:
+    txt = str(value).strip() if value is not None else ""
+    if not txt or txt.lower() in {"nan", "none", "unknown"}:
+        return OTHER_SECTOR
+    return txt
 
 
 def _safe_to_csv(df: pd.DataFrame, path: Path) -> Path:
@@ -77,6 +85,14 @@ def _safe_savefig(fig, path: Path, dpi: int = 140) -> Path:
         alt = path.with_name(f"{path.stem}.new{path.suffix}")
         fig.savefig(alt, dpi=dpi)
         return alt
+
+
+def _safe_print(msg: str) -> None:
+    """Best-effort console output (avoids Streamlit/Windows invalid-handle OSError)."""
+    try:
+        print(msg)
+    except OSError:
+        pass
 
 
 def _load_alias_map(path: Path | None) -> dict[str, str]:
@@ -240,6 +256,44 @@ def _extend_positions_and_cash_to_date(
             cash = pd.concat([cash, extra], ignore_index=True)
 
     return pos, cash
+
+
+def _slice_positions_cash_with_carry(
+    positions_df: pd.DataFrame,
+    cash_df: pd.DataFrame,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Slice to [start_date, end_date] but carry in prior state at start_date:
+    - positions: last shares per symbol before start_date
+    - cash: last cash row before start_date
+    """
+    pos = positions_df.copy()
+    cash = cash_df.copy()
+    pos["date"] = pd.to_datetime(pos["date"]).dt.normalize()
+    cash["date"] = pd.to_datetime(cash["date"]).dt.normalize()
+    start = pd.to_datetime(start_date).normalize()
+    end = pd.to_datetime(end_date).normalize()
+
+    pos_in = pos[pos["date"].between(start, end)].copy()
+    pos_prior = pos[pos["date"] < start].sort_values("date").groupby("symbol", as_index=False).tail(1).copy()
+    if not pos_prior.empty:
+        pos_prior["date"] = start
+    pos_out = pd.concat([pos_prior, pos_in], ignore_index=True)
+    if not pos_out.empty:
+        pos_out = pos_out.sort_values(["symbol", "date"]).drop_duplicates(["symbol", "date"], keep="last")
+
+    cash_in = cash[cash["date"].between(start, end)].copy()
+    cash_prior = cash[cash["date"] < start].sort_values("date").tail(1).copy()
+    if not cash_prior.empty:
+        cash_prior["date"] = start
+        cash_prior["external_flow"] = 0.0
+    cash_out = pd.concat([cash_prior, cash_in], ignore_index=True)
+    if not cash_out.empty:
+        cash_out = cash_out.sort_values("date").drop_duplicates(["date"], keep="last")
+
+    return pos_out.reset_index(drop=True), cash_out.reset_index(drop=True)
 
 
 class BloombergClient:
@@ -467,9 +521,16 @@ def _portfolio_security_panel(
 
     px_wide = px.pivot_table(index="date", columns="symbol", values="price")
     px_wide = px_wide.sort_index().ffill()
+    tri_wide = pd.DataFrame(index=px_wide.index, columns=px_wide.columns, dtype="float64")
+    has_tr_index = "tr_index" in px.columns
+    if has_tr_index:
+        tri_raw = px.pivot_table(index="date", columns="symbol", values="tr_index")
+        tri_wide = tri_raw.sort_index().ffill()
     if trading_dates is not None:
         # Restrict to target trading dates before return calc to avoid holiday/weekend artifacts.
         px_wide = px_wide.reindex(pd.DatetimeIndex(sorted(pd.to_datetime(trading_dates).unique()))).ffill()
+        if has_tr_index:
+            tri_wide = tri_wide.reindex(px_wide.index).ffill()
     pos_wide = pos.pivot_table(index="date", columns="symbol", values="shares", aggfunc="last")
     pos_wide = pos_wide.sort_index().ffill().fillna(0)
 
@@ -478,8 +539,20 @@ def _portfolio_security_panel(
         common_dates = common_dates.intersection(trading_dates)
     pos_wide = pos_wide.reindex(common_dates)
     px_wide = px_wide.reindex(common_dates)
+    if has_tr_index and not tri_wide.empty:
+        tri_wide = tri_wide.reindex(common_dates)
 
-    ret_wide = px_wide.pct_change()
+    ret_wide_price = px_wide.pct_change()
+    ret_wide = ret_wide_price.copy()
+    uses_tr_by_symbol: dict[str, bool] = {str(c): False for c in ret_wide.columns}
+    if has_tr_index and not tri_wide.empty:
+        ret_wide_tri = tri_wide.pct_change()
+        for sym in ret_wide.columns:
+            col = str(sym)
+            tri_col = ret_wide_tri[col] if col in ret_wide_tri.columns else pd.Series(index=ret_wide.index, dtype="float64")
+            if tri_col.notna().any():
+                ret_wide[col] = tri_col.combine_first(ret_wide_price[col])
+                uses_tr_by_symbol[col] = True
     mv_wide = pos_wide.clip(lower=0) * px_wide
     mv_prev = mv_wide.shift(1)
 
@@ -497,6 +570,11 @@ def _portfolio_security_panel(
             share_ratio = (pos_wide / pos_wide.shift(1)).replace([float("inf"), float("-inf")], pd.NA).fillna(1.0)
             share_ratio = share_ratio.where(share_ratio > 0, 1.0)
             ret_split_adj = ((1.0 + ret_wide) * share_ratio) - 1.0
+            # Only apply split mechanics on symbols using price returns.
+            if uses_tr_by_symbol:
+                for col in split_mask.columns:
+                    if uses_tr_by_symbol.get(str(col), False):
+                        split_mask[col] = False
             ret_wide = ret_wide.where(~split_mask, ret_split_adj)
 
     nav = nav.set_index("date").reindex(common_dates)
@@ -509,7 +587,7 @@ def _portfolio_security_panel(
         on=["date", "symbol"],
         how="left",
     )
-    panel["sector"] = panel["symbol"].map(sector_by_symbol).fillna("Unknown")
+    panel["sector"] = panel["symbol"].map(sector_by_symbol).apply(_normalize_sector_name)
     panel = panel.merge(
         nav_prev.rename_axis("date").reset_index(name="nav_prev"),
         on="date",
@@ -561,6 +639,173 @@ def _aggregate_portfolio_sector(panel: pd.DataFrame, nav_df: pd.DataFrame) -> pd
     return out
 
 
+def compute_brinson_bhb_daily(
+    portfolio_sector_df: pd.DataFrame,
+    benchmark_sector_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Compute daily Brinson-Fachler effects from sector-level inputs.
+
+    Inputs:
+      portfolio_sector_df columns: date, sector, w_p, r_p
+      benchmark_sector_df columns: date, sector, w_b, r_b_s
+
+    Conventions:
+    - Arithmetic returns.
+    - Start-of-period sector weights (`w_p`, `w_b`).
+    - Daily attribution; multi-period values are additive sums of daily effects.
+    """
+    p = portfolio_sector_df.copy()
+    b = benchmark_sector_df.copy()
+    p["date"] = pd.to_datetime(p["date"]).dt.normalize()
+    b["date"] = pd.to_datetime(b["date"]).dt.normalize()
+    p["sector"] = p["sector"].apply(_normalize_sector_name)
+    b["sector"] = b["sector"].apply(_normalize_sector_name)
+
+    decomp = p[["date", "sector", "w_p", "r_p"]].merge(
+        b[["date", "sector", "w_b", "r_b_s"]],
+        on=["date", "sector"],
+        how="outer",
+    )
+    decomp[["w_p", "r_p", "w_b", "r_b_s"]] = decomp[["w_p", "r_p", "w_b", "r_b_s"]].fillna(0.0)
+    # Drop dates where portfolio or benchmark sector weights are entirely missing.
+    by_date_sums = decomp.groupby("date", as_index=False).agg(w_p_sum=("w_p", "sum"), w_b_sum=("w_b", "sum"))
+    valid_dates = by_date_sums[(by_date_sums["w_p_sum"] > 0.0) & (by_date_sums["w_b_sum"] > 0.0)]["date"]
+    decomp = decomp[decomp["date"].isin(valid_dates)].copy()
+    if decomp.empty:
+        return decomp, pd.DataFrame(columns=["date", "w_p_sum", "w_b_sum", "alloc_effect", "select_pure_effect", "interaction_effect", "select_effect", "r_p_model", "r_b_model", "active_return_model", "active_model", "recon_error"])
+    # Normalize weights per day to avoid startup/date-edge incompleteness drifting BF reconciliation.
+    sum_wp = decomp.groupby("date")["w_p"].transform("sum")
+    sum_wb = decomp.groupby("date")["w_b"].transform("sum")
+    decomp["w_p"] = decomp["w_p"] / sum_wp.where(sum_wp != 0, 1.0)
+    decomp["w_b"] = decomp["w_b"] / sum_wb.where(sum_wb != 0, 1.0)
+
+    rb = (
+        decomp.assign(_x=decomp["w_b"] * decomp["r_b_s"])
+        .groupby("date", as_index=False)["_x"]
+        .sum()
+        .rename(columns={"_x": "r_b"})
+    )
+    decomp = decomp.merge(rb, on="date", how="left")
+
+    # Brinson-Fachler allocation: overweight/underweight scaled by sector return relative to broad benchmark.
+    decomp["alloc_effect"] = (decomp["w_p"] - decomp["w_b"]) * (decomp["r_b_s"] - decomp["r_b"])
+    decomp["select_pure_effect"] = decomp["w_b"] * (decomp["r_p"] - decomp["r_b_s"])
+    decomp["interaction_effect"] = (decomp["w_p"] - decomp["w_b"]) * (decomp["r_p"] - decomp["r_b_s"])
+    decomp["select_effect"] = decomp["select_pure_effect"] + decomp["interaction_effect"]
+
+    by_day = (
+        decomp.groupby("date", as_index=False)
+        .agg(
+            w_p_sum=("w_p", "sum"),
+            w_b_sum=("w_b", "sum"),
+            alloc_effect=("alloc_effect", "sum"),
+            select_pure_effect=("select_pure_effect", "sum"),
+            interaction_effect=("interaction_effect", "sum"),
+            select_effect=("select_effect", "sum"),
+            r_p_model=("r_p", lambda s: 0.0),
+            r_b_model=("r_b_s", lambda s: 0.0),
+        )
+    )
+    rp = (
+        decomp.assign(_x=decomp["w_p"] * decomp["r_p"])
+        .groupby("date", as_index=False)["_x"]
+        .sum()
+        .rename(columns={"_x": "r_p_model"})
+    )
+    rb = (
+        decomp.assign(_x=decomp["w_b"] * decomp["r_b_s"])
+        .groupby("date", as_index=False)["_x"]
+        .sum()
+        .rename(columns={"_x": "r_b_model"})
+    )
+    by_day = by_day.drop(columns=["r_p_model", "r_b_model"]).merge(rp, on="date", how="left").merge(rb, on="date", how="left")
+    by_day["active_return_model"] = by_day["r_p_model"] - by_day["r_b_model"]
+    by_day["active_model"] = by_day["alloc_effect"] + by_day["select_effect"]
+    by_day["recon_error"] = by_day["active_return_model"] - by_day["active_model"]
+    by_day = by_day.sort_values("date").reset_index(drop=True)
+    return decomp.sort_values(["date", "sector"]).reset_index(drop=True), by_day
+
+
+def build_attribution_diagnostics(
+    decomp_df: pd.DataFrame,
+    by_day_df: pd.DataFrame,
+    tolerance: float = 1e-10,
+) -> dict[str, object]:
+    """Return structured diagnostics for attribution reconciliation failures."""
+    d = decomp_df.copy()
+    by_day = by_day_df.copy()
+    if d.empty or by_day.empty:
+        return {"reconciles": True, "message": "No attribution rows to diagnose."}
+
+    max_abs_err = float(by_day["recon_error"].abs().max())
+    worst_idx = int(by_day["recon_error"].abs().idxmax())
+    worst_date = pd.to_datetime(by_day.loc[worst_idx, "date"]).date().isoformat()
+
+    # Candidates that most often create mismatches in production runs.
+    weight_issues = by_day[
+        (
+            ((by_day["w_p_sum"] - 1.0).abs() > tolerance * 10)
+            | ((by_day["w_b_sum"] - 1.0).abs() > tolerance * 10)
+        )
+    ][["date", "w_p_sum", "w_b_sum"]]
+    missing_sector_rows = d[d["sector"].apply(_normalize_sector_name) == OTHER_SECTOR]
+
+    worst_day_rows = d[d["date"] == pd.to_datetime(worst_date)]
+    top_effects = (
+        worst_day_rows.assign(total_effect=worst_day_rows["alloc_effect"] + worst_day_rows["select_effect"])
+        .reindex(columns=["sector", "w_p", "w_b", "r_p", "r_b_s", "alloc_effect", "select_effect", "interaction_effect", "total_effect"])
+        .sort_values("total_effect", key=lambda s: s.abs(), ascending=False)
+        .head(5)
+    )
+    likely_fixes: list[str] = []
+    if not weight_issues.empty:
+        likely_fixes.append("Sector weights do not sum to 1.0. Check cash/other bucket handling and weight timing.")
+    if not missing_sector_rows.empty:
+        likely_fixes.append("Unmapped securities were bucketed to Other. Confirm sector map completeness.")
+    if max_abs_err > tolerance:
+        likely_fixes.append("Return definitions may be mixed. Ensure arithmetic returns are used consistently.")
+        likely_fixes.append("Compare attribution against model active return (r_p_model-r_b_model), not external benchmark series.")
+
+    return {
+        "reconciles": bool(max_abs_err <= tolerance),
+        "tolerance": tolerance,
+        "max_abs_recon_error": max_abs_err,
+        "worst_date": worst_date,
+        "weight_sum_issues": weight_issues.assign(date=weight_issues["date"].astype(str)).to_dict("records"),
+        "other_bucket_rows": int(len(missing_sector_rows)),
+        "top_effects_on_worst_day": top_effects.to_dict("records"),
+        "likely_fixes": likely_fixes,
+    }
+
+
+def _trim_leading_incomplete_dates(
+    decomp_df: pd.DataFrame,
+    by_day_df: pd.DataFrame,
+    weight_tolerance: float = 0.005,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Trim leading dates until both portfolio and benchmark sector weights are fully populated.
+    This removes startup artifacts where first-day portfolio sector weights are incomplete.
+    """
+    if decomp_df.empty or by_day_df.empty:
+        return decomp_df, by_day_df
+
+    by_day = by_day_df.sort_values("date").copy()
+    ok = (
+        (by_day["w_p_sum"] - 1.0).abs() <= weight_tolerance
+    ) & (
+        (by_day["w_b_sum"] - 1.0).abs() <= weight_tolerance
+    )
+    if not bool(ok.any()):
+        return decomp_df, by_day_df
+
+    first_good_date = pd.to_datetime(by_day.loc[ok, "date"]).min()
+    by_day = by_day[pd.to_datetime(by_day["date"]) >= first_good_date].copy()
+    decomp = decomp_df[pd.to_datetime(decomp_df["date"]) >= first_good_date].copy()
+    return decomp, by_day
+
+
 def _compute_benchmark_sector_model(
     bench_members: list[str],
     bench_member_sectors: dict[str, str],
@@ -606,30 +851,33 @@ def _compute_benchmark_sector_model_from_sector_indices(
 ) -> pd.DataFrame:
     """
     Build benchmark sector weights/returns from Bloomberg S&P 600 sector indices.
-    - Sector return from sector index PX_LAST.
+    - Sector return from total-return index level where available (fallback to PX_LAST).
     - Sector weight from CUR_MKT_CAP / benchmark CUR_MKT_CAP.
     """
     sec_map = dict(SML_SECTOR_INDEX_MAP)
+    tri = bbg.get_historical_field(sec_map, "TOT_RETURN_INDEX_GROSS_DVDS", start, end).rename(columns={"value": "tri"})
     px = bbg.get_historical_field(sec_map, "PX_LAST", start, end).rename(columns={"value": "px"})
     cap = bbg.get_historical_field(sec_map, "CUR_MKT_CAP", start, end).rename(columns={"value": "cap"})
     total_cap = bbg.get_historical_field({"_total_": benchmark_security}, "CUR_MKT_CAP", start, end).rename(
         columns={"value": "total_cap"}
     )
 
-    if px.empty or cap.empty or total_cap.empty:
+    if (tri.empty and px.empty) or cap.empty or total_cap.empty:
         return pd.DataFrame(columns=["date", "sector", "w_b", "r_b_s", "r_b_model"])
 
     td = pd.DatetimeIndex(sorted(pd.to_datetime(trading_dates).unique()))
     rows: list[pd.DataFrame] = []
     for sector in sec_map.keys():
         p = px[px["symbol"] == sector][["date", "px"]].set_index("date").reindex(td).ffill()
+        t = tri[tri["symbol"] == sector][["date", "tri"]].set_index("date").reindex(td).ffill() if not tri.empty else pd.DataFrame(index=td, data={"tri": pd.NA})
         c = cap[cap["symbol"] == sector][["date", "cap"]].set_index("date").reindex(td).ffill()
-        g = p.join(c, how="left")
+        g = p.join(t, how="left").join(c, how="left")
+        g["ret_base"] = pd.to_numeric(g["tri"], errors="coerce").combine_first(pd.to_numeric(g["px"], errors="coerce"))
         g["sector"] = sector
         g = g.reset_index().rename(columns={"index": "date"})
         rows.append(g)
     sector_df = pd.concat(rows, ignore_index=True)
-    sector_df["r_b_s"] = sector_df.groupby("sector")["px"].pct_change().fillna(0.0)
+    sector_df["r_b_s"] = sector_df.groupby("sector")["ret_base"].pct_change().fillna(0.0)
 
     total = total_cap[["date", "total_cap"]].set_index("date").reindex(td).ffill().reset_index().rename(
         columns={"index": "date"}
@@ -742,7 +990,6 @@ def refresh_bloomberg_cache(
     )
     old_prices = _load_cache_csv(paths["prices"])
     all_prices = _merge_cache(old_prices, new_prices, ["date", "symbol"])
-    _safe_to_csv(all_prices, paths["prices"])
 
     emit(45, "Refreshing benchmark and sector caches")
     cfg = BloombergConfig()
@@ -763,6 +1010,26 @@ def refresh_bloomberg_cache(
             bench_dates = pd.DatetimeIndex(bench_px["date"].dropna().unique())
 
         alias_map = _load_alias_map(alias_path)
+        sec_map = {s: alias_map.get(s, f"{s} US Equity") for s in symbols}
+        tri_prices = bbg.get_historical_field(
+            sec_map,
+            "TOT_RETURN_INDEX_GROSS_DVDS",
+            fetch_start - pd.Timedelta(days=10),
+            fetch_end,
+        ).rename(columns={"value": "tr_index"})
+        if not tri_prices.empty:
+            tri_prices["date"] = pd.to_datetime(tri_prices["date"]).dt.normalize()
+            all_prices = all_prices.merge(
+                tri_prices[["date", "symbol", "tr_index"]],
+                on=["date", "symbol"],
+                how="left",
+            )
+            if "tr_index_x" in all_prices.columns or "tr_index_y" in all_prices.columns:
+                x = all_prices["tr_index_x"] if "tr_index_x" in all_prices.columns else pd.Series([pd.NA] * len(all_prices))
+                y = all_prices["tr_index_y"] if "tr_index_y" in all_prices.columns else pd.Series([pd.NA] * len(all_prices))
+                all_prices["tr_index"] = pd.to_numeric(y, errors="coerce").combine_first(pd.to_numeric(x, errors="coerce"))
+                all_prices = all_prices.drop(columns=[c for c in ["tr_index_x", "tr_index_y"] if c in all_prices.columns])
+            all_prices = all_prices.sort_values(["date", "symbol"]).drop_duplicates(["date", "symbol"], keep="last").reset_index(drop=True)
         sector_map, sector_debug = _resolve_sector_by_symbol_with_debug(
             bbg,
             symbols,
@@ -775,6 +1042,8 @@ def refresh_bloomberg_cache(
             fetch_end,
             bench_dates,
         )
+
+    _safe_to_csv(all_prices, paths["prices"])
 
     old_bench = _load_cache_csv(paths["benchmark"])
     all_bench = _merge_cache(old_bench, bench_px[["date", "benchmark", "tri", "benchmark_return"]], ["date"])
@@ -858,15 +1127,21 @@ def run_attribution_poc(
         smap_cache = _load_cache_csv(paths["sector_map"])
 
     emit(30, "Loading prices from cache")
+    price_cols = ["date", "symbol", "price"] + (["tr_index"] if "tr_index" in price_cache.columns else [])
     prices_df = price_cache[
         price_cache["symbol"].isin(symbols)
         & (pd.to_datetime(price_cache["date"]).dt.normalize() >= (date_min - pd.Timedelta(days=40)))
         & (pd.to_datetime(price_cache["date"]).dt.normalize() <= date_max)
-    ][["date", "symbol", "price"]].copy()
+    ][price_cols].copy()
 
     # Limit working set to window and extend to latest benchmark date.
-    positions_df = positions_df[pd.to_datetime(positions_df["date"]).dt.normalize().between(date_min, date_max)].copy()
-    cash_df = cash_df[pd.to_datetime(cash_df["date"]).dt.normalize().between(date_min, date_max)].copy()
+    state_start = date_min
+    if not bench_cache.empty and "date" in bench_cache.columns:
+        bdates = pd.to_datetime(bench_cache["date"], errors="coerce").dt.normalize().dropna()
+        prior = bdates[bdates < date_min]
+        if not prior.empty:
+            state_start = prior.max()
+    positions_df, cash_df = _slice_positions_cash_with_carry(positions_df, cash_df, state_start, date_max)
     positions_df, cash_df = _extend_positions_and_cash_to_date(positions_df, cash_df, date_max)
     emit(40, "Computing portfolio NAV")
     nav_df = compute_daily_nav(positions_df, cash_df, prices_df)
@@ -891,6 +1166,12 @@ def run_attribution_poc(
     benchmark_dates = benchmark_dates[(benchmark_dates >= date_min) & (benchmark_dates <= date_max)]
     if benchmark_dates.empty:
         raise RuntimeError("Benchmark cache has no returns in the requested window. Refresh Bloomberg cache first.")
+    benchmark_panel_dates = benchmark_dates
+    prior_bench_dates = bench_px.loc[bench_px["date"] < date_min, "date"].dropna()
+    if not prior_bench_dates.empty:
+        benchmark_panel_dates = pd.DatetimeIndex(
+            sorted(set(benchmark_dates.tolist() + [pd.to_datetime(prior_bench_dates.max()).normalize()]))
+        )
 
     sector_by_symbol = (
         smap_cache[smap_cache["symbol"].isin(symbols)]
@@ -900,14 +1181,14 @@ def run_attribution_poc(
         .to_dict()
     )
     for sym in symbols:
-        sector_by_symbol.setdefault(sym, "Unknown")
+        sector_by_symbol[sym] = _normalize_sector_name(sector_by_symbol.get(sym))
 
     panel = _portfolio_security_panel(
         positions_df,
         prices_df,
         nav_df,
         sector_by_symbol,
-        trading_dates=benchmark_dates,
+        trading_dates=benchmark_panel_dates,
         split_events_df=trades_df[trades_df["txn_type"].isin(POSITION_ADDITION_TYPES)][["trade_date", "symbol"]].rename(columns={"trade_date": "date"}),
     )
     p_sec = _aggregate_portfolio_sector(panel, nav_df)
@@ -917,6 +1198,17 @@ def run_attribution_poc(
     b_sec = b_sec[b_sec["date"].between(date_min, date_max)].copy()
     if b_sec.empty:
         raise RuntimeError("Benchmark sector-model cache is empty for the requested window. Refresh Bloomberg cache first.")
+
+    # Attribution requires both portfolio and benchmark sector inputs on the same dates.
+    # Without this, the first date in a window can appear as all-zero portfolio weights
+    # against non-zero benchmark weights, creating a spurious allocation shock.
+    p_dates = pd.DatetimeIndex(pd.to_datetime(p_sec["date"]).dt.normalize().unique())
+    b_dates = pd.DatetimeIndex(pd.to_datetime(b_sec["date"]).dt.normalize().unique())
+    model_dates = pd.DatetimeIndex(sorted(p_dates.intersection(b_dates)))
+    if len(model_dates) == 0:
+        raise RuntimeError("No overlapping portfolio/benchmark sector dates for attribution in the requested window.")
+    p_sec = p_sec[p_sec["date"].isin(model_dates)].copy()
+    b_sec = b_sec[b_sec["date"].isin(model_dates)].copy()
 
     emit(65, "Building active return decomposition")
 
@@ -943,43 +1235,19 @@ def run_attribution_poc(
     )
     daily = daily.merge(bench_px[["date", "benchmark_return"]], on="date", how="left")
     daily = daily[daily["benchmark_return"].notna()].copy()
+    daily = daily[daily["date"].isin(model_dates)].copy()
 
-    # Brinson-like decomposition against sector model benchmark.
-    decomp = p_sec.merge(b_sec, on=["date", "sector"], how="outer")
-    decomp[["w_p", "r_p", "w_b", "r_b_s"]] = decomp[["w_p", "r_p", "w_b", "r_b_s"]].fillna(0.0)
-    # Brinson-Fachler daily decomposition.
-    rb = (
-        decomp.assign(_x=decomp["w_b"] * decomp["r_b_s"])
-        .groupby("date", as_index=False)["_x"]
-        .sum()
-        .rename(columns={"_x": "r_b"})
-    )
-    decomp = decomp.merge(rb, on="date", how="left")
-    decomp["alloc_effect"] = (decomp["w_p"] - decomp["w_b"]) * (decomp["r_b_s"] - decomp["r_b"])
-    decomp["select_pure_effect"] = decomp["w_b"] * (decomp["r_p"] - decomp["r_b_s"])
-    decomp["interaction_effect"] = (decomp["w_p"] - decomp["w_b"]) * (decomp["r_p"] - decomp["r_b_s"])
-    # Fold interaction into selection so Allocation + Selection = Active (Bloomberg-style 2-way view).
-    decomp["select_effect"] = decomp["select_pure_effect"] + decomp["interaction_effect"]
-
-    by_day = decomp.groupby("date", as_index=False)[["alloc_effect", "select_effect"]].sum()
-    by_day = by_day.merge(
-        b_sec.groupby("date", as_index=False)["r_b_model"].first(), on="date", how="left"
-    )
-    p_model = (
-        p_sec.assign(_x=p_sec["w_p"] * p_sec["r_p"])
-        .groupby("date", as_index=False)["_x"]
-        .sum()
-        .rename(columns={"_x": "r_p_model"})
-    )
-    by_day = by_day.merge(p_model, on="date", how="left")
+    # BHB decomposition: reconciles by construction to model active return.
+    decomp, by_day = compute_brinson_bhb_daily(p_sec, b_sec[["date", "sector", "w_b", "r_b_s"]])
+    decomp, by_day = _trim_leading_incomplete_dates(decomp, by_day, weight_tolerance=0.005)
     daily = daily.merge(by_day, on="date", how="left")
 
-    daily[["alloc_effect", "select_effect", "r_b_model", "r_p_model"]] = daily[
-        ["alloc_effect", "select_effect", "r_b_model", "r_p_model"]
+    daily[["alloc_effect", "select_effect", "select_pure_effect", "interaction_effect", "r_b_model", "r_p_model", "active_return_model", "active_model", "recon_error"]] = daily[
+        ["alloc_effect", "select_effect", "select_pure_effect", "interaction_effect", "r_b_model", "r_p_model", "active_return_model", "active_model", "recon_error"]
     ].fillna(0.0)
     daily["active_return"] = daily["daily_return"] - daily["benchmark_return"]
-    daily["active_model"] = daily["alloc_effect"] + daily["select_effect"]
     daily["model_gap"] = daily["active_return"] - daily["active_model"]
+    daily["recon_gap_to_model"] = daily["active_return"] - daily["active_return_model"]
 
     # Cumulative compounding.
     daily["cum_portfolio"] = (1.0 + daily["daily_return"].fillna(0.0)).cumprod() - 1.0
@@ -991,6 +1259,7 @@ def run_attribution_poc(
     daily["cum_alloc"] = daily["alloc_effect"].fillna(0.0).cumsum()
     daily["cum_select"] = daily["select_effect"].fillna(0.0).cumsum()
     daily["cum_model_gap"] = daily["model_gap"].fillna(0.0).cumsum()
+    daily["cum_recon_error"] = daily["recon_error"].fillna(0.0).cumsum()
 
     alloc_total = float(daily["alloc_effect"].fillna(0.0).sum())
     select_total = float(daily["select_effect"].fillna(0.0).sum())
@@ -1004,30 +1273,31 @@ def run_attribution_poc(
                 "total_portfolio_return",
                 "total_benchmark_return",
                 "total_active_return",
-                "model_active_contribution_sum",
+                "model_active_return_sum",
                 "allocation_effect",
                 "selection_effect",
-                "selection_pure_effect",
                 "interaction_effect",
-                "model_gap_sum",
-                "model_active_return",
-                "true_vs_model_active_return_gap",
+                "total_attribution_effect",
+                "unexplained_active_gap",
             ],
             "value": [
                 float(daily["cum_portfolio"].iloc[-1]),
                 float(daily["cum_benchmark"].iloc[-1]),
                 float(daily["cum_active"].iloc[-1]),
-                model_active_total,
+                float(daily["active_return_model"].fillna(0.0).sum()),
                 alloc_total,
-                select_total,
                 selection_pure_total,
                 interaction_total,
+                alloc_total + selection_pure_total + interaction_total,
                 model_gap_total,
-                float(daily["cum_active_model"].iloc[-1]),
-                float(daily["cum_active"].iloc[-1] - daily["cum_active_model"].iloc[-1]),
             ],
         }
     )
+
+    diagnostics = build_attribution_diagnostics(decomp, by_day)
+    if not diagnostics.get("reconciles", True):
+        print("Attribution diagnostics (reconciliation failed):")
+        print(diagnostics)
 
     sector_totals = decomp.groupby("sector", as_index=False)[["alloc_effect", "select_effect"]].sum()
     sector_totals["total_effect"] = sector_totals["alloc_effect"] + sector_totals["select_effect"]
@@ -1080,15 +1350,21 @@ def run_attribution_poc(
     fig2_written = _safe_savefig(fig2, out_dir / "attribution_cum_effects.png", dpi=140)
     plt.close(fig2)
 
-    print(f"Wrote {daily_written} ({len(daily)} rows)")
-    print(f"Wrote {summary_written} ({len(summary)} rows)")
-    print(f"Wrote {sector_written} ({len(sector_totals)} rows)")
-    print(f"Wrote {security_written} ({len(security_totals)} rows)")
-    print(f"Wrote {fig1_written}")
-    print(f"Wrote {fig2_written}")
-    print("Summary:")
+    _safe_print(f"Wrote {daily_written} ({len(daily)} rows)")
+    _safe_print(f"Wrote {summary_written} ({len(summary)} rows)")
+    _safe_print(f"Wrote {sector_written} ({len(sector_totals)} rows)")
+    _safe_print(f"Wrote {security_written} ({len(security_totals)} rows)")
+    _safe_print(f"Wrote {fig1_written}")
+    _safe_print(f"Wrote {fig2_written}")
+    _safe_print("Summary:")
     for _, r in summary.iterrows():
-        print(f"  {r['metric']}: {r['value']:.4%}")
+        metric = str(r.get("metric", "metric"))
+        val = pd.to_numeric(pd.Series([r.get("value")]), errors="coerce").iloc[0]
+        if pd.notna(val):
+            text = f"  {metric}: {float(val):.4%}"
+        else:
+            text = f"  {metric}: {r.get('value')}"
+        _safe_print(text)
     emit(100, "Attribution complete")
 
 

@@ -22,7 +22,16 @@ from src.portfolio.load_transactions import load_transactions, POSITION_ADDITION
 from src.portfolio.cash import build_cash_ledger
 from src.portfolio.positions import POSITION_ADD_TYPES, build_positions
 from src.portfolio.prices import get_latest_market_date, get_prices
-from attribution_poc import BloombergClient, BloombergConfig, _extend_positions_and_cash_to_date, _portfolio_security_panel
+from attribution_poc import (
+    BloombergClient,
+    BloombergConfig,
+    _trim_leading_incomplete_dates,
+    _aggregate_portfolio_sector,
+    _extend_positions_and_cash_to_date,
+    _portfolio_security_panel,
+    _slice_positions_cash_with_carry,
+    compute_brinson_bhb_daily,
+)
 from src.portfolio.nav import compute_daily_nav
 
 
@@ -30,6 +39,50 @@ def _load_if_exists(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
     return pd.read_csv(path)
+
+
+def _load_cached_prices(
+    repo_path: Path,
+    symbols: list[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    lookback_days: int = 40,
+) -> pd.DataFrame:
+    cache_path = repo_path / "outputs" / "cache" / "portfolio_prices.csv"
+    if not cache_path.exists() or not symbols:
+        return pd.DataFrame(columns=["date", "symbol", "price", "tr_index"])
+    px = pd.read_csv(cache_path)
+    if px.empty or not {"date", "symbol", "price"}.issubset(set(px.columns)):
+        return pd.DataFrame(columns=["date", "symbol", "price", "tr_index"])
+    px["date"] = pd.to_datetime(px["date"], errors="coerce").dt.normalize()
+    lo = pd.to_datetime(start).normalize() - pd.Timedelta(days=lookback_days)
+    hi = pd.to_datetime(end).normalize()
+    keep_cols = ["date", "symbol", "price"] + (["tr_index"] if "tr_index" in px.columns else [])
+    px = px[
+        px["symbol"].isin(symbols)
+        & (px["date"] >= lo)
+        & (px["date"] <= hi)
+    ][keep_cols].copy()
+    return px.sort_values(["date", "symbol"]).reset_index(drop=True)
+
+
+def _cache_covers_window(
+    prices_df: pd.DataFrame,
+    symbols: list[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> bool:
+    if prices_df.empty or not symbols:
+        return False
+    p = prices_df.copy()
+    p["date"] = pd.to_datetime(p["date"]).dt.normalize()
+    for sym in symbols:
+        s = p[p["symbol"] == sym]
+        if s.empty:
+            return False
+        if s["date"].min() > pd.to_datetime(start).normalize() or s["date"].max() < pd.to_datetime(end).normalize():
+            return False
+    return True
 
 
 def _scaled_percent_like(df: pd.DataFrame, unit: str, skip_cols: set[str] | None = None) -> pd.DataFrame:
@@ -1322,12 +1375,16 @@ def _compute_security_decomp(repo: str, start_date: str, end_date: str) -> pd.Da
         return pd.DataFrame(columns=["symbol", "sector", "selection_effect", "avg_weight", "local_return"])
 
     trades_df, cashflows_df = load_transactions(str(repo_path / "Transactions.csv"))
-    positions_df = build_positions(trades_df)
-    positions_df["date"] = pd.to_datetime(positions_df["date"]).dt.normalize()
-    positions_df = positions_df[positions_df["date"].between(start, end)]
-    cash_df = build_cash_ledger(trades_df, cashflows_df)
-    cash_df["date"] = pd.to_datetime(cash_df["date"]).dt.normalize()
-    cash_df = cash_df[cash_df["date"].between(start, end)]
+    state_start = start
+    bench_cache_for_anchor = _load_if_exists(repo_path / "outputs" / "cache" / "benchmark_px.csv")
+    if bench_cache_for_anchor is not None and not bench_cache_for_anchor.empty and "date" in bench_cache_for_anchor.columns:
+        bdates = pd.to_datetime(bench_cache_for_anchor["date"], errors="coerce").dt.normalize().dropna()
+        prior = bdates[bdates < start]
+        if not prior.empty:
+            state_start = prior.max()
+    base_positions = build_positions(trades_df)
+    base_cash = build_cash_ledger(trades_df, cashflows_df)
+    positions_df, cash_df = _slice_positions_cash_with_carry(base_positions, base_cash, state_start, end)
     positions_df, cash_df = _extend_positions_and_cash_to_date(positions_df, cash_df, end)
 
     symbols = sorted(positions_df["symbol"].unique().tolist())
@@ -1336,14 +1393,17 @@ def _compute_security_decomp(repo: str, start_date: str, end_date: str) -> pd.Da
     inputs_dir = repo_path / "inputs"
     alias_path = inputs_dir / "symbol_aliases.csv" if inputs_dir.exists() else None
     manual_prices_path = inputs_dir / "manual_prices.csv" if inputs_dir.exists() else None
-    prices_df = get_prices(
-        symbols,
-        start,
-        end,
-        alias_path=alias_path,
-        manual_prices_path=manual_prices_path,
-        trades_for_fallback=trades_df,
-    )
+    prices_df = _load_cached_prices(repo_path, symbols, start, end, lookback_days=40)
+    if not _cache_covers_window(prices_df, symbols, start, end):
+        fetch_start = min(pd.to_datetime(state_start).normalize(), pd.to_datetime(start).normalize())
+        prices_df = get_prices(
+            symbols,
+            fetch_start,
+            end,
+            alias_path=alias_path,
+            manual_prices_path=manual_prices_path,
+            trades_for_fallback=trades_df,
+        )
     nav_df = compute_daily_nav(positions_df, cash_df, prices_df)
 
     # Prefer cached mappings/dates so this works in hosted/offline mode.
@@ -1369,6 +1429,9 @@ def _compute_security_decomp(repo: str, start_date: str, end_date: str) -> pd.Da
         trading_dates = pd.DatetimeIndex(sorted(prices_df["date"].dropna().unique()))
     trading_dates = pd.DatetimeIndex(trading_dates)
     trading_dates = trading_dates[(trading_dates >= start) & (trading_dates <= end)]
+    prior_bench = bc.loc[bc["date"] < start, "date"].dropna() if "date" in bc.columns else pd.Series(dtype="datetime64[ns]")
+    if not prior_bench.empty:
+        trading_dates = pd.DatetimeIndex(sorted(set(trading_dates.tolist() + [pd.to_datetime(prior_bench.max()).normalize()])))
 
     sector_by_symbol: dict[str, str] = {}
     sector_cache = _load_if_exists(cache_dir / "portfolio_sector_map.csv")
@@ -1432,6 +1495,186 @@ def _compute_security_decomp(repo: str, start_date: str, end_date: str) -> pd.Da
     out["local_return"] = out["local_return"].fillna(0.0)
     out["holding_days"] = out["holding_days"].fillna(0).astype(int)
     return out[out["holding_days"] > 0].copy()
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _compute_sector_period_details(repo: str, start_date: str, end_date: str) -> pd.DataFrame:
+    repo_path = Path(repo)
+    start = pd.to_datetime(start_date).normalize()
+    end = pd.to_datetime(end_date).normalize()
+
+    trades_df, cashflows_df = load_transactions(str(repo_path / "Transactions.csv"))
+    state_start = start
+    bench_cache_for_anchor = _load_if_exists(repo_path / "outputs" / "cache" / "benchmark_px.csv")
+    if bench_cache_for_anchor is not None and not bench_cache_for_anchor.empty and "date" in bench_cache_for_anchor.columns:
+        bdates = pd.to_datetime(bench_cache_for_anchor["date"], errors="coerce").dt.normalize().dropna()
+        prior = bdates[bdates < start]
+        if not prior.empty:
+            state_start = prior.max()
+    base_positions = build_positions(trades_df)
+    base_cash = build_cash_ledger(trades_df, cashflows_df)
+    positions_df, cash_df = _slice_positions_cash_with_carry(base_positions, base_cash, state_start, end)
+    if positions_df.empty or cash_df.empty:
+        return pd.DataFrame()
+    positions_df, cash_df = _extend_positions_and_cash_to_date(positions_df, cash_df, end)
+
+    symbols = sorted(positions_df["symbol"].unique().tolist())
+    if not symbols:
+        return pd.DataFrame()
+
+    inputs_dir = repo_path / "inputs"
+    alias_path = inputs_dir / "symbol_aliases.csv" if inputs_dir.exists() else None
+    manual_prices_path = inputs_dir / "manual_prices.csv" if inputs_dir.exists() else None
+    prices_df = _load_cached_prices(repo_path, symbols, start, end, lookback_days=40)
+    if not _cache_covers_window(prices_df, symbols, start, end):
+        fetch_start = min(pd.to_datetime(state_start).normalize(), pd.to_datetime(start).normalize())
+        prices_df = get_prices(
+            symbols,
+            fetch_start,
+            end,
+            alias_path=alias_path,
+            manual_prices_path=manual_prices_path,
+            trades_for_fallback=trades_df,
+        )
+    nav_df = compute_daily_nav(positions_df, cash_df, prices_df)
+
+    cache_dir = repo_path / "outputs" / "cache"
+    bench_cache = _load_if_exists(cache_dir / "benchmark_px.csv")
+    if bench_cache is None or bench_cache.empty or "date" not in bench_cache.columns:
+        return pd.DataFrame()
+    bc = bench_cache.copy()
+    bc["date"] = pd.to_datetime(bc["date"], errors="coerce").dt.normalize()
+    if "benchmark_return" in bc.columns:
+        trading_dates = pd.DatetimeIndex(bc.loc[bc["benchmark_return"].notna(), "date"].dropna().unique())
+    elif "tri" in bc.columns:
+        bc = bc.sort_values("date")
+        bc["ret"] = pd.to_numeric(bc["tri"], errors="coerce").pct_change()
+        trading_dates = pd.DatetimeIndex(bc.loc[bc["ret"].notna(), "date"].dropna().unique())
+    elif "price" in bc.columns:
+        bc = bc.sort_values("date")
+        bc["ret"] = pd.to_numeric(bc["price"], errors="coerce").pct_change()
+        trading_dates = pd.DatetimeIndex(bc.loc[bc["ret"].notna(), "date"].dropna().unique())
+    else:
+        trading_dates = pd.DatetimeIndex([])
+    trading_dates = trading_dates[(trading_dates >= start) & (trading_dates <= end)]
+    prior_bench = bc.loc[bc["date"] < start, "date"].dropna()
+    if not prior_bench.empty:
+        trading_dates = pd.DatetimeIndex(sorted(set(trading_dates.tolist() + [pd.to_datetime(prior_bench.max()).normalize()])))
+    if len(trading_dates) == 0:
+        return pd.DataFrame()
+
+    sector_cache = _load_if_exists(cache_dir / "portfolio_sector_map.csv")
+    if sector_cache is None or sector_cache.empty or not {"symbol", "sector"}.issubset(set(sector_cache.columns)):
+        return pd.DataFrame()
+    sector_by_symbol = (
+        sector_cache[sector_cache["symbol"].isin(symbols)]
+        .drop_duplicates("symbol", keep="last")
+        .set_index("symbol")["sector"]
+        .astype(str)
+        .to_dict()
+    )
+    for s in symbols:
+        if not str(sector_by_symbol.get(s, "")).strip():
+            sector_by_symbol[s] = "Other"
+
+    split_events = (
+        trades_df[trades_df["txn_type"].isin(POSITION_ADDITION_TYPES)][["trade_date", "symbol"]]
+        .rename(columns={"trade_date": "date"})
+        .copy()
+    )
+    panel = _portfolio_security_panel(
+        positions_df,
+        prices_df,
+        nav_df,
+        sector_by_symbol,
+        trading_dates=trading_dates,
+        split_events_df=split_events,
+    )
+    if panel.empty:
+        return pd.DataFrame()
+
+    p_sec = _aggregate_portfolio_sector(panel, nav_df)
+    b_sec = _load_if_exists(cache_dir / "benchmark_sector_model.csv")
+    if b_sec is None or b_sec.empty:
+        return pd.DataFrame()
+    b_sec["date"] = pd.to_datetime(b_sec["date"], errors="coerce").dt.normalize()
+    b_sec = b_sec[b_sec["date"].between(start, end)][["date", "sector", "w_b", "r_b_s"]].copy()
+    if b_sec.empty:
+        return pd.DataFrame()
+
+    p_dates = pd.DatetimeIndex(pd.to_datetime(p_sec["date"]).dt.normalize().unique())
+    b_dates = pd.DatetimeIndex(pd.to_datetime(b_sec["date"]).dt.normalize().unique())
+    model_dates = pd.DatetimeIndex(sorted(p_dates.intersection(b_dates)))
+    if len(model_dates) == 0:
+        return pd.DataFrame()
+    p_sec = p_sec[p_sec["date"].isin(model_dates)].copy()
+    b_sec = b_sec[b_sec["date"].isin(model_dates)].copy()
+
+    decomp, by_day = compute_brinson_bhb_daily(p_sec, b_sec)
+    decomp, by_day = _trim_leading_incomplete_dates(decomp, by_day, weight_tolerance=0.005)
+    if decomp.empty:
+        return pd.DataFrame()
+    effective_start = pd.to_datetime(by_day["date"]).min()
+    effective_end = pd.to_datetime(by_day["date"]).max()
+    anchor_candidates = pd.to_datetime(bc["date"], errors="coerce").dropna()
+    anchor_candidates = anchor_candidates[anchor_candidates < effective_start]
+    effective_anchor_start = anchor_candidates.max() if not anchor_candidates.empty else effective_start
+
+    benchmark_cum_return = 0.0
+    bench_series = bc.copy()
+    bench_series["date"] = pd.to_datetime(bench_series["date"], errors="coerce").dt.normalize()
+    if "benchmark_return" in bench_series.columns:
+        bench_series["bench_ret"] = pd.to_numeric(bench_series["benchmark_return"], errors="coerce")
+    elif "tri" in bench_series.columns:
+        bench_series = bench_series.sort_values("date")
+        bench_series["bench_ret"] = pd.to_numeric(bench_series["tri"], errors="coerce").pct_change()
+    elif "price" in bench_series.columns:
+        bench_series = bench_series.sort_values("date")
+        bench_series["bench_ret"] = pd.to_numeric(bench_series["price"], errors="coerce").pct_change()
+    else:
+        bench_series["bench_ret"] = pd.NA
+    model_dates_trimmed = pd.DatetimeIndex(pd.to_datetime(by_day["date"]).dt.normalize().unique())
+    bench_slice = bench_series[bench_series["date"].isin(model_dates_trimmed)].copy()
+    if not bench_slice.empty:
+        benchmark_cum_return = float((1.0 + bench_slice["bench_ret"].fillna(0.0)).prod() - 1.0)
+
+    detail = (
+        decomp.groupby("sector", as_index=False)
+        .agg(
+            avg_port_weight=("w_p", "mean"),
+            avg_benchmark_weight=("w_b", "mean"),
+            avg_weight_gap=("w_p", lambda s: float(s.mean())),
+            avg_benchmark_sector_return=("r_b_s", "mean"),
+            index_sector_cum_return=("r_b_s", lambda s: (1.0 + s).prod() - 1.0),
+            allocation_effect=("alloc_effect", "sum"),
+            selection_effect=("select_effect", "sum"),
+            interaction_effect=("interaction_effect", "sum"),
+            total_effect=("select_effect", "sum"),
+            allocation_formula_sum=("alloc_effect", "sum"),
+        )
+    )
+    latest_date = pd.to_datetime(decomp["date"]).max()
+    current = (
+        decomp[pd.to_datetime(decomp["date"]) == latest_date]
+        .groupby("sector", as_index=False)
+        .agg(
+            current_port_weight=("w_p", "sum"),
+            current_benchmark_weight=("w_b", "sum"),
+        )
+    )
+    current["current_weight_gap"] = current["current_port_weight"] - current["current_benchmark_weight"]
+    detail = detail.merge(current, on="sector", how="left")
+    detail[["current_port_weight", "current_benchmark_weight", "current_weight_gap"]] = (
+        detail[["current_port_weight", "current_benchmark_weight", "current_weight_gap"]].fillna(0.0)
+    )
+    detail["avg_weight_gap"] = detail["avg_port_weight"] - detail["avg_benchmark_weight"]
+    detail["benchmark_cum_return"] = benchmark_cum_return
+    detail["sector_op_vs_index"] = detail["index_sector_cum_return"] - detail["benchmark_cum_return"]
+    detail["effective_start_date"] = effective_start
+    detail["effective_end_date"] = effective_end
+    detail["effective_anchor_start_date"] = effective_anchor_start
+    detail["total_effect"] = detail["allocation_effect"] + detail["selection_effect"]
+    return detail
 
 
 def main() -> None:
@@ -1647,7 +1890,7 @@ def main() -> None:
 
         rc1, rc2 = st.columns([1, 2])
         with rc1:
-            if st.button("Refresh Bloomberg Cache", disabled=not bbg_ok):
+            if st.button("Update Local Cache (Bloomberg)", disabled=not bbg_ok):
                 cache_bar = st.progress(0, text="Starting cache refresh...")
                 cache_step = st.empty()
 
@@ -1663,10 +1906,10 @@ def main() -> None:
                     progress_callback=_on_cache_progress,
                 )
                 cache_bar.progress(100, text="Cache refresh complete")
-                st.success("Bloomberg cache refreshed.")
+                st.success("Local cache refreshed from Bloomberg.")
                 has_cache = True
         with rc2:
-            st.caption("Use this first to fetch/update benchmark, sector, and portfolio market data. Date-range runs will reuse this cache.")
+            st.caption("Refresh this snapshot when data is stale. Attribution date-range runs reuse local cache coverage and should not call Bloomberg unless coverage is missing.")
 
         run_disabled = not (bbg_ok or has_cache)
         if run_disabled:
@@ -1739,8 +1982,33 @@ def main() -> None:
 
         if sector is not None:
             st.subheader("Sector Out/Underperformance")
-            sv = sector.copy()
+            sv = _compute_sector_period_details(str(repo), str(start), str(end))
+            if sv is None or sv.empty:
+                sv = sector.copy()
+            sv_all = sv.copy()
+            cash_mask_all = sv_all["sector"].astype(str).str.strip().str.lower() == "cash"
+            cash_row = sv_all[cash_mask_all].copy()
+
+            if "avg_weight_gap" in sv_all.columns:
+                total_avg_gap_all = float(pd.to_numeric(sv_all["avg_weight_gap"], errors="coerce").fillna(0.0).sum())
+                total_avg_gap_ex_cash = float(
+                    pd.to_numeric(sv_all.loc[~cash_mask_all, "avg_weight_gap"], errors="coerce").fillna(0.0).sum()
+                )
+            else:
+                total_avg_gap_all = float("nan")
+                total_avg_gap_ex_cash = float("nan")
+
+            if "current_weight_gap" in sv_all.columns:
+                total_curr_gap_all = float(pd.to_numeric(sv_all["current_weight_gap"], errors="coerce").fillna(0.0).sum())
+                total_curr_gap_ex_cash = float(
+                    pd.to_numeric(sv_all.loc[~cash_mask_all, "current_weight_gap"], errors="coerce").fillna(0.0).sum()
+                )
+            else:
+                total_curr_gap_all = float("nan")
+                total_curr_gap_ex_cash = float("nan")
+
             sv = sv[sv["sector"].astype(str).str.strip().str.lower() != "cash"].copy()
+            sv = sv[sv["sector"].astype(str).str.strip().str.lower() != "funds"].copy()
             unknown_in_sector = sv["sector"].astype(str).str.strip().str.lower() == "unknown"
             if unknown_in_sector.any() and sec_decomp is not None and not sec_decomp.empty:
                 unknown_symbols = (
@@ -1754,18 +2022,97 @@ def main() -> None:
                     st.caption(f"Unknown sector currently contains: {', '.join(unknown_symbols)}")
             sv["status"] = sv["total_effect"].map(lambda x: "Outperforming" if x > 0 else "Underperforming")
             sv = sv.sort_values("total_effect", ascending=False)
-            sv_view = sv[["sector", "status", "alloc_effect", "select_effect", "total_effect"]]
-            sv_scaled = _scaled_percent_like(sv_view, unit, skip_cols={"sector", "status"})
-            st.dataframe(
-                sv_scaled,
-                use_container_width=True,
-                hide_index=True,
-                column_config=_effect_number_config(
+            if "avg_port_weight" in sv.columns:
+                sv_view = sv[
+                    [
+                        "sector",
+                        "status",
+                        "avg_port_weight",
+                        "avg_benchmark_weight",
+                        "avg_weight_gap",
+                        "current_weight_gap",
+                        "index_sector_cum_return",
+                        "sector_op_vs_index",
+                        "avg_benchmark_sector_return",
+                        "allocation_effect",
+                        "selection_effect",
+                        "total_effect",
+                    ]
+                ]
+                sv_scaled = _scaled_percent_like(sv_view, unit, skip_cols={"sector", "status"})
+                cfg = _effect_number_config(
                     sv_scaled,
                     unit,
                     skip_cols={"sector", "status"},
-                ),
-            )
+                )
+                cfg["avg_port_weight"] = st.column_config.NumberColumn("Avg Port Wt", format="%.2f%%")
+                cfg["avg_benchmark_weight"] = st.column_config.NumberColumn("Avg Index Wt", format="%.2f%%")
+                cfg["avg_weight_gap"] = st.column_config.NumberColumn("Avg OW/UW", format="%.2f%%")
+                cfg["current_weight_gap"] = st.column_config.NumberColumn("Current OW/UW", format="%.2f%%")
+                cfg["index_sector_cum_return"] = st.column_config.NumberColumn("Cumulative Return", format=_percent_unit_format(unit))
+                cfg["sector_op_vs_index"] = st.column_config.NumberColumn("% O/P vs Index", format=_percent_unit_format(unit))
+                cfg["avg_benchmark_sector_return"] = st.column_config.NumberColumn("Avg Index Sector Ret", format=_percent_unit_format(unit))
+                cfg["allocation_effect"] = st.column_config.NumberColumn("Allocation Effect", format=_percent_unit_format(unit))
+                cfg["selection_effect"] = st.column_config.NumberColumn("Selection Effect", format=_percent_unit_format(unit))
+                cfg["total_effect"] = st.column_config.NumberColumn("Total Effect", format=_percent_unit_format(unit))
+                st.dataframe(
+                    sv_scaled,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=cfg,
+                )
+                if {"effective_start_date", "effective_end_date"}.issubset(set(sv.columns)):
+                    es = pd.to_datetime(sv["effective_start_date"].iloc[0]).date()
+                    ee = pd.to_datetime(sv["effective_end_date"].iloc[0]).date()
+                    if "effective_anchor_start_date" in sv.columns:
+                        eas = pd.to_datetime(sv["effective_anchor_start_date"].iloc[0]).date()
+                        st.caption(
+                            f"Effective sector return window: {es.strftime('%m/%d/%Y')} to {ee.strftime('%m/%d/%Y')} "
+                            f"(return anchor start: {eas.strftime('%m/%d/%Y')})"
+                        )
+                    else:
+                        st.caption(f"Effective sector return window used in table: {es.strftime('%m/%d/%Y')} to {ee.strftime('%m/%d/%Y')}")
+                st.caption(
+                    "Allocation effect is summed daily as "
+                    "(portfolio sector weight - index sector weight) x (sector return - broad index return) "
+                    "(Brinson-Fachler)."
+                )
+                if not cash_row.empty and "avg_port_weight" in cash_row.columns:
+                    cash_view = cash_row[
+                        [
+                            "sector",
+                            "avg_port_weight",
+                            "current_port_weight",
+                        ]
+                    ].copy()
+                    for c in ["avg_port_weight", "current_port_weight"]:
+                        cash_view[c] = pd.to_numeric(cash_view[c], errors="coerce")
+                        # Streamlit NumberColumn with "%.xf%%" does not auto-scale 0-1 weights to percent points.
+                        cash_view[c] = cash_view[c] * 100.0
+                    cash_cfg = {
+                        "sector": st.column_config.TextColumn("Sector"),
+                        "avg_port_weight": st.column_config.NumberColumn("Avg Port Wt", format="%.3f%%"),
+                        "current_port_weight": st.column_config.NumberColumn("Current Port Wt", format="%.3f%%"),
+                    }
+                    st.dataframe(
+                        cash_view,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config=cash_cfg,
+                    )
+            else:
+                sv_view = sv[["sector", "status", "alloc_effect", "select_effect", "total_effect"]]
+                sv_scaled = _scaled_percent_like(sv_view, unit, skip_cols={"sector", "status"})
+                st.dataframe(
+                    sv_scaled,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=_effect_number_config(
+                        sv_scaled,
+                        unit,
+                        skip_cols={"sector", "status"},
+                    ),
+                )
             if sec_decomp is not None and not sec_decomp.empty:
                 st.caption("Selection effect by sector (expand to view constituents).")
                 sec_group = (
@@ -1812,3 +2159,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

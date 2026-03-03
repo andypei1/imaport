@@ -2,3 +2,4 @@ pandas>=2.0
 matplotlib>=3.8
 streamlit>=1.34
 yfinance>=0.2
+pytest>=9.0
